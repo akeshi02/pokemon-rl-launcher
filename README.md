@@ -164,34 +164,6 @@ PokemonRLSetup.exe --cli --dest D:\pokemon --env pokemonrl --no-packages --log i
 `POKE_AUTOSTART=1` makes the launcher start the run configured in `launcher_config.json` as
 soon as its window opens (used for automated smoke tests).
 
-### Publishing your own release
-
-`.github/workflows/release.yml` builds the installer on `windows-latest` and attaches it to a
-GitHub Release whenever you push a `v*` tag.
-
-```bash
-git remote add origin https://github.com/akeshi02/pokemon-rl-launcher.git   # or your fork's URL
-git push -u origin main
-
-git tag v1.0.0
-git push origin v1.0.0        # builds + publishes the release
-```
-
-Checklist before tagging:
-
-1. `OVERLAY_REPO` in `installer.py` must name **your** repo (it is pre-set to this
-   project's), so the wizard can pull overlay updates from it; if it's wrong the wizard
-   just falls back to the copy bundled inside the EXE.
-2. Bump `APP_VERSION` in `installer.py`, `version_launcher.txt`, `version_setup.txt`, and
-   add a `CHANGELOG.md` entry.
-3. Locally run `build_all.bat`, then check the EXE and do a real install, before tagging.
-   A windowed EXE prints nothing and a plain shell returns immediately, so check the exit
-   code instead — PowerShell:
-   `(Start-Process -FilePath dist\PokemonRLSetup.exe -ArgumentList '--cli','--help' -PassThru -Wait).ExitCode`,
-   and pass `--log install.log` to a real `--cli` install to read what it did.
-
-Prefer doing it by hand? `gh release create v1.0.0 dist\PokemonRLSetup.exe --generate-notes`
-after `build_all.bat` works too. Users only ever need `PokemonRLSetup.exe`.
 
 ### Using your own conda environment
 

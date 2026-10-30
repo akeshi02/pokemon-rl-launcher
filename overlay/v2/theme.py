@@ -26,11 +26,14 @@ import sys
 from pathlib import Path
 
 __all__ = [
-    "TOKENS", "SIZES", "ACCENTS", "SPACE", "RADIUS",
+    "TOKENS", "SIZES", "ACCENTS", "ACCENT_LABELS", "SPACE", "RADIUS",
     "c", "col", "f", "sizes", "set_appearance", "get_appearance",
-    "set_accent", "get_accent", "apply", "enable_dpi_awareness",
+    "set_accent", "get_accent", "accent_names", "accent_label",
+    "accent_from_label", "apply", "enable_dpi_awareness",
     "asset_path", "assets_dir", "load_font_files", "font_family",
-    "as_dict",
+    "as_dict", "system_dpi", "dpi_scaling", "scaling_for_dpi",
+    "window_scale", "screen_size", "fit_size", "set_widget_scaling",
+    "set_screen_override",
 ]
 
 # ---------------------------------------------------------------------------
@@ -135,6 +138,15 @@ ACCENTS: dict[str, dict[str, tuple[str, str]]] = {
     },
 }
 
+# Display order + human labels for the in-app accent switcher (M1).
+ACCENT_LABELS = {
+    "blue": "Blue",
+    "poke_red": "Poké Red",
+    "gold": "Gold",
+    "green": "Green",
+    "dmg": "DMG",
+}
+
 _appearance = "dark"
 _accent = "blue"
 
@@ -236,22 +248,24 @@ def get_appearance() -> str:
 
 
 def set_appearance(mode: str) -> None:
+    """Set the appearance.  ``mode`` may be 'light', 'dark' or 'system'.
+
+    'system' is handed to customtkinter unchanged so it genuinely follows the
+    OS setting; ``_appearance`` stores the *resolved* light/dark value that
+    :func:`col` needs.
+    """
     global _appearance
     mode = (mode or "dark").lower()
-    if mode == "system":
-        try:
-            import customtkinter as ctk
-            mode = "light" if ctk.get_appearance_mode().lower() == "light" else "dark"
-        except Exception:
-            mode = "dark"
-    if mode not in ("light", "dark"):
+    if mode not in ("light", "dark", "system"):
         raise ValueError("appearance must be 'light', 'dark' or 'system'")
-    _appearance = mode
+    resolved = "light" if mode == "light" else "dark"
     try:
         import customtkinter as ctk
-        ctk.set_appearance_mode(mode)
+        ctk.set_appearance_mode(mode)  # customtkinter understands "system"
+        resolved = "light" if ctk.get_appearance_mode().lower() == "light" else "dark"
     except Exception:
         pass
+    _appearance = resolved
 
 
 def get_accent() -> str:
@@ -266,11 +280,73 @@ def set_accent(name: str) -> None:
     _accent = name
 
 
+def accent_names() -> list[str]:
+    """Accent preset ids, in the order the switcher should show them."""
+    return [n for n in ACCENT_LABELS if n in ACCENTS]
+
+
+def accent_label(name: str) -> str:
+    """Human label for a preset id (falls back to the id itself)."""
+    return ACCENT_LABELS.get(name, name)
+
+
+def accent_from_label(label: str) -> str:
+    """Inverse of :func:`accent_label`, always returning a valid preset id."""
+    for name, text in ACCENT_LABELS.items():
+        if text == label:
+            return name
+    return "blue"
+
+
+def _retint_ctk_theme() -> None:
+    """Point customtkinter's stock controls at the current accent preset.
+
+    ``blue`` is customtkinter's own theme, so it is deliberately left alone --
+    dark+blue therefore stays byte-identical to 1.0.0.  Every other preset
+    recolours the widgets customtkinter would otherwise draw blue (buttons,
+    checkboxes, radios, sliders, scrollbars, ...) so a red/gold/DMG accent looks
+    finished instead of blue-with-red-bars.
+
+    Call it *after* ``ctk.set_default_color_theme`` and *before* building
+    widgets (customtkinter reads ``ThemeManager.theme`` at construction time, so
+    the accent switcher rebuilds the screen right after this runs).
+    """
+    if _accent == "blue":
+        return
+    try:
+        import customtkinter as ctk
+        theme = ctk.ThemeManager.theme
+    except Exception:
+        return
+    if not theme:
+        return
+    fg, hover, on = c("accent"), c("accent_hover"), c("on_accent")
+    updates = {
+        "CTkButton":          {"fg_color": fg, "hover_color": hover, "text_color": on},
+        "CTkCheckBox":        {"fg_color": fg, "hover_color": hover, "checkmark_color": on},
+        "CTkRadioButton":     {"fg_color": fg, "hover_color": hover},
+        "CTkSegmentedButton": {"selected_color": fg, "selected_hover_color": hover},
+        "CTkOptionMenu":      {"fg_color": fg, "button_color": fg,
+                               "button_hover_color": hover, "text_color": on},
+        "CTkComboBox":        {"button_color": fg, "button_hover_color": hover},
+        "CTkProgressBar":     {"progress_color": fg},
+        "CTkSlider":          {"progress_color": fg, "button_color": fg,
+                               "button_hover_color": hover},
+        "CTkSwitch":          {"progress_color": fg},
+        "CTkScrollbar":       {"button_color": fg, "button_hover_color": hover},
+    }
+    for key, mapping in updates.items():
+        node = theme.get(key)
+        if isinstance(node, dict):
+            node.update(mapping)
+
+
 def apply(appearance: str | None = None, accent: str | None = None) -> None:
     """Configure customtkinter + this module.  Safe to call more than once.
 
-    Keeps CTk's own "blue" widget theme so frames/entries/buttons stay exactly
-    as in 1.0.0; the accent presets above only recolour our explicit tokens.
+    The classic "blue" accent keeps customtkinter's own widget theme, so
+    dark+blue is byte-identical to 1.0.0; the other accent presets recolour both
+    our tokens and customtkinter's stock controls (see :func:`_retint_ctk_theme`).
     """
     if accent is not None:
         set_accent(accent)
@@ -278,9 +354,10 @@ def apply(appearance: str | None = None, accent: str | None = None) -> None:
         set_appearance(appearance)
     try:
         import customtkinter as ctk
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme("blue")  # resets ThemeManager.theme
     except Exception:
         pass
+    _retint_ctk_theme()
 
 
 def as_dict() -> dict:
@@ -323,6 +400,127 @@ def enable_dpi_awareness() -> str:
 def scaling_for_dpi(dpi: int = 96) -> float:
     """Widget-scaling factor for a DPI value (CTk defaults to 96 dpi == 1.0)."""
     return max(0.5, min(3.0, dpi / 96.0))
+
+
+# Test seams: the screenshot harness emulates a different display scaling and/or
+# a smaller screen on this one monitor.  None means "use the real value".
+_scaling_override: float | None = None
+_screen_override: tuple[int, int] | None = None
+
+
+def system_dpi() -> int:
+    """DPI of the primary monitor (96 == 100 % scaling)."""
+    if not sys.platform.startswith("win"):
+        return 96
+    import ctypes
+    try:
+        return int(ctypes.windll.user32.GetDpiForSystem())
+    except Exception:
+        pass
+    try:
+        import tkinter as tk
+        root = getattr(tk, "_default_root", None)
+        if root is not None:
+            return int(round(root.winfo_fpixels("1i")))
+    except Exception:
+        pass
+    return 96
+
+
+def dpi_scaling() -> float:
+    """Scaling factor of the primary monitor (1.25 at 125 %, ...)."""
+    return scaling_for_dpi(system_dpi())
+
+
+def window_scale(widget) -> float:
+    """Factor customtkinter is scaling *this* window's geometry by.
+
+    customtkinter multiplies a requested ``WxH`` by its window scaling (which
+    tracks the monitor DPI); ``+x+y`` is left in physical pixels.  Tk's own
+    pixels-per-inch for the window equals that factor times 96, so we can read
+    it without reaching into customtkinter's internals.  When the screenshot
+    harness has emulated a different scaling, that value wins.
+    """
+    if _scaling_override is not None:
+        return _scaling_override
+    try:
+        return max(0.5, float(widget.winfo_fpixels("1i")) / 96.0)
+    except Exception:
+        return dpi_scaling()
+
+
+def screen_size(widget=None) -> tuple[int, int]:
+    """Physical screen size, honouring the harness' ``set_screen_override``.
+
+    ``widget`` may be None (uses the primary monitor / override).
+    """
+    if _screen_override is not None:
+        return _screen_override
+    try:
+        return widget.winfo_screenwidth(), widget.winfo_screenheight()
+    except Exception:
+        pass
+    try:
+        import tkinter as tk
+        root = getattr(tk, "_default_root", None)
+        if root is not None:
+            return root.winfo_screenwidth(), root.winfo_screenheight()
+    except Exception:
+        pass
+    return 0, 0
+
+
+def fit_size(widget, width: int, height: int,
+             margin_x: int = 24, margin_y: int = 80) -> tuple[int, int]:
+    """Clamp a requested *logical* window size so it fits the screen at this DPI.
+
+    ``geometry("1000x760")`` becomes 1250x950 physical at 125 %, so a size that
+    is fine on paper can hang off a 720-tall screen.  Returns the largest size
+    that still leaves room for the taskbar/title bar.
+    """
+    scale = window_scale(widget)
+    try:
+        screen_w, screen_h = screen_size(widget)
+        screen_w = screen_w / scale
+        screen_h = screen_h / scale
+    except Exception:
+        return width, height
+    return (int(min(width, max(320, screen_w - margin_x))),
+            int(min(height, max(240, screen_h - margin_y))))
+
+
+def set_screen_override(width: int | None, height: int | None = None) -> None:
+    """Pretend the screen is ``width``x``height`` *physical* pixels (harness only).
+
+    Lets the screenshot tool assert the layout against a small display (e.g.
+    1280x720) without changing the monitor.  ``None`` restores the real screen.
+    """
+    global _screen_override
+    _screen_override = None if not width else (int(width), int(height or width))
+
+
+def set_widget_scaling(factor: float | None = None) -> None:
+    """Emulate a display scaling of ``factor`` (1.0 == 100 %, 1.5 == 150 %).
+
+    ``None`` clears the emulation (customtkinter scaling back to 1.0).  customtkinter
+    multiplies its window scaling *on top of* the monitor DPI factor, so we cancel
+    the real factor and ask for the target one; the emulated factor is remembered so
+    :func:`window_scale` (and therefore :func:`fit_size`) stays consistent.
+    This exists for the screenshot harness -- real use relies on per-monitor
+    automatic scaling.
+    """
+    global _scaling_override
+    import customtkinter as ctk
+    if factor is None:
+        _scaling_override = None
+        ctk.set_widget_scaling(1.0)
+        ctk.set_window_scaling(1.0)
+        return
+    factor = float(factor)
+    _scaling_override = factor
+    rel = factor / max(0.1, dpi_scaling())
+    ctk.set_widget_scaling(rel)
+    ctk.set_window_scaling(rel)
 
 
 # ---------------------------------------------------------------------------

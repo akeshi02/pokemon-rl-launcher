@@ -315,8 +315,14 @@ class LauncherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Pokemon RL Training Launcher")
-        self.geometry("1000x760")
-        self.minsize(720, 480)
+        # customtkinter multiplies a requested geometry by the monitor scaling
+        # (1.25 at 125 %), so a fixed "1000x760" can hang off a 1280x720 screen.
+        # Ask for a comfortable size, then clamp it to what actually fits.
+        start_w, start_h = T.fit_size(self, 1040, 780)
+        self.geometry(f"{start_w}x{start_h}")
+        # The minimum must never be *larger* than what fits -- otherwise a small
+        # screen at high DPI (e.g. 1280x720 at 150 %) is forced to clip.
+        self.minsize(min(720, start_w), min(520, start_h))
 
         self.proc = None
         self.root_pid = None
@@ -333,6 +339,18 @@ class LauncherApp(ctk.CTk):
         self.train_log_path = None
 
         self.cfg = load_launcher_config()
+
+        # Appearance + accent (M1).  Precedence: env var (the screenshot/test
+        # harnesses set these) -> what the user last chose -> the 1.0.0 default.
+        self.appearance = (os.environ.get("POKE_THEME")
+                           or str(self.cfg.get("appearance") or "dark")).lower()
+        self.accent = (os.environ.get("POKE_ACCENT")
+                       or str(self.cfg.get("accent") or "blue")).lower()
+        if self.appearance not in ("dark", "light", "system"):
+            self.appearance = "dark"
+        if self.accent not in T.ACCENTS:
+            self.accent = "blue"
+        T.apply(appearance=self.appearance, accent=self.accent)
 
         default_workdir = str(self.cfg.get("workdir") or "")
         if not default_workdir or not Path(default_workdir).is_dir():
@@ -386,6 +404,98 @@ class LauncherApp(ctk.CTk):
             child.destroy()
         self.update_idletasks()
 
+    # ------------------------------------------------------------------
+    # Themed chrome helpers (M1: one place defines what a card/header/dialog
+    # looks like, so every screen stays consistent and restyling is one file).
+    # ------------------------------------------------------------------
+    def _card(self, parent, pady=None):
+        """A rounded, bordered surface for a group of settings."""
+        card = ctk.CTkFrame(parent, corner_radius=T.RADIUS["card"], border_width=1,
+                            border_color=T.c("border"))
+        card.pack(fill="x", pady=(0, T.SPACE["md"]) if pady is None else pady)
+        return card
+
+    def _card_header(self, card, text, on_refresh=None):
+        """Accent-bar + bold title row, with an optional Refresh button."""
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=T.SPACE["md"], pady=(T.SPACE["md"], T.SPACE["sm"]))
+        left = ctk.CTkFrame(row, fg_color="transparent")
+        left.pack(side="left")
+        ctk.CTkFrame(left, width=4, height=18, fg_color=T.c("accent"),
+                     corner_radius=2).pack(side="left", padx=(0, T.SPACE["sm"]))
+        ctk.CTkLabel(left, text=text, font=T.f("body_bold", "bold")).pack(side="left")
+        if on_refresh is not None:
+            ctk.CTkButton(row, text="Refresh", width=80, command=on_refresh).pack(side="right")
+        return row
+
+    def _build_appearance_controls(self, parent):
+        """Light/dark + accent switcher, top-right of the select screen."""
+        block = ctk.CTkFrame(parent, fg_color="transparent")
+        block.pack(side="right", anchor="n")
+        ctk.CTkLabel(block, text="🎨 Appearance", text_color=T.c("text_faint"),
+                     font=T.f("small")).pack(anchor="e")
+        row = ctk.CTkFrame(block, fg_color="transparent")
+        row.pack(anchor="e", pady=(2, 0))
+
+        self.appearance_menu = ctk.CTkSegmentedButton(
+            row, values=["Dark", "Light", "System"], width=210,
+            font=T.f("small"),
+            selected_color=T.c("accent"), selected_hover_color=T.c("accent_hover"),
+            unselected_color=T.c("card"), unselected_hover_color=T.c("accent_soft"),
+            text_color=T.c("text"),
+            command=self._on_appearance_choice)
+        self.appearance_menu.set(self._appearance_label())
+        self.appearance_menu.pack(side="left")
+
+        self.accent_menu = ctk.CTkOptionMenu(
+            row, values=[T.accent_label(n) for n in T.accent_names()], width=120,
+            font=T.f("small"), dropdown_font=T.f("small"),
+            fg_color=T.c("accent"), button_color=T.c("accent"),
+            button_hover_color=T.c("accent_hover"), text_color=T.c("on_accent"),
+            command=self._on_accent_choice)
+        self.accent_menu.set(T.accent_label(self.accent))
+        self.accent_menu.pack(side="left", padx=(T.SPACE["sm"], 0))
+
+    def _appearance_label(self) -> str:
+        return {"light": "Light", "dark": "Dark", "system": "System"}.get(
+            self.appearance, "Dark")
+
+    def _on_appearance_choice(self, label):
+        """Dark/Light/System: customtkinter recolours live, so no rebuild needed."""
+        self.appearance = label.lower()
+        T.apply(appearance=self.appearance)
+        self._persist_theme()
+
+    def _on_accent_choice(self, label):
+        """Accents are baked into widgets at construction -> rebuild the screen."""
+        name = T.accent_from_label(label)
+        if name == self.accent:
+            return
+        self.accent = name
+        T.apply(accent=name)
+        self._persist_theme()
+        self.after(1, self.build_select_frame)
+
+    def _persist_theme(self):
+        save_launcher_config({"appearance": self.appearance, "accent": self.accent})
+
+    def _dialog(self, title, width, height):
+        """A themed, centred Toplevel that fits the screen and closes on Esc."""
+        win = ctk.CTkToplevel(self)
+        win.title(title)
+        win.transient(self)
+        win.attributes("-topmost", True)
+        cw, ch = T.fit_size(self, width, height, margin_x=T.SPACE["xl"], margin_y=88)
+        scale = T.window_scale(self)
+        # customtkinter scales the requested WxH itself; +x+y stays physical.
+        px_w, px_h = int(cw * scale), int(ch * scale)
+        sw, sh = T.screen_size(self)
+        x = max(0, (sw - px_w) // 2)
+        y = max(0, (sh - px_h) // 3)
+        win.geometry(f"{cw}x{ch}+{x}+{y}")
+        win.bind("<Escape>", lambda _e: win.destroy())
+        return win
+
     def build_select_frame(self):
         self._clear_root_children()
         self.grid_frame = None
@@ -398,69 +508,86 @@ class LauncherApp(ctk.CTk):
             scrollbar_button_color=T.c("accent"),
             scrollbar_button_hover_color=T.c("accent_hover"),
         )
-        f.pack(fill="both", expand=True, padx=24, pady=20)
+        f.pack(fill="both", expand=True, padx=T.SPACE["xl"], pady=T.SPACE["lg"])
         self.select_frame = f
 
         header = ctk.CTkFrame(f, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(header, text="🎮 Pokemon RL Training Launcher",
-                     font=T.f(24, "bold")).pack(anchor="w")
-        ctk.CTkLabel(header, text="Configure a run, pick a checkpoint (or start fresh), and launch.",
-                     text_color=T.c("text_dim"), font=T.f(13)).pack(anchor="w", pady=(2, 0))
-        ctk.CTkFrame(f, height=2, fg_color=T.c("accent")).pack(fill="x", pady=(12, 16))
+        header.pack(fill="x")
+        title_block = ctk.CTkFrame(header, fg_color="transparent")
+        title_block.pack(side="left", anchor="n")
+        ctk.CTkLabel(title_block, text="🎮 Pokemon RL Training Launcher",
+                     font=T.f("h1", "bold")).pack(anchor="w")
+        ctk.CTkLabel(title_block, text="Configure a run, pick a checkpoint (or start fresh), and launch.",
+                     text_color=T.c("text_dim"), font=T.f("body")).pack(anchor="w", pady=(2, 0))
+        self._build_appearance_controls(header)
+        ctk.CTkFrame(f, height=2, fg_color=T.c("accent")).pack(
+            fill="x", pady=(T.SPACE["md"], T.SPACE["lg"]))
 
         def section_label(parent, text):
             row = ctk.CTkFrame(parent, fg_color="transparent")
-            row.grid(row=0, column=0, sticky="w", padx=14, pady=(12, 6), columnspan=4)
-            ctk.CTkFrame(row, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(row, text=text, font=T.f(14, "bold")).pack(side="left")
+            row.grid(row=0, column=0, sticky="w", columnspan=4,
+                     padx=T.SPACE["md"], pady=(T.SPACE["md"], T.SPACE["sm"]))
+            ctk.CTkFrame(row, width=4, height=18, fg_color=T.c("accent"),
+                         corner_radius=2).pack(side="left", padx=(0, T.SPACE["sm"]))
+            ctk.CTkLabel(row, text=text, font=T.f("body_bold", "bold")).pack(side="left")
 
         # --- Paths section ---
-        paths_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
-        paths_card.pack(fill="x", pady=(0, 14))
+        sp = T.SPACE
+        paths_card = self._card(f)
         section_label(paths_card, "📁 Paths")
 
-        ctk.CTkLabel(paths_card, text="Working directory").grid(row=1, column=0, sticky="w", padx=14, pady=6)
-        ctk.CTkEntry(paths_card, textvariable=self.workdir_var, width=420).grid(row=1, column=1, padx=6, pady=6)
-        ctk.CTkButton(paths_card, text="Browse", width=80, command=self.browse_workdir).grid(row=1, column=2, padx=(6, 14))
+        ctk.CTkLabel(paths_card, text="Working directory").grid(
+            row=1, column=0, sticky="w", padx=sp["md"], pady=sp["sm"])
+        ctk.CTkEntry(paths_card, textvariable=self.workdir_var, width=420).grid(
+            row=1, column=1, padx=sp["xs"], pady=sp["sm"])
+        ctk.CTkButton(paths_card, text="Browse", width=80, command=self.browse_workdir).grid(
+            row=1, column=2, padx=(sp["xs"], sp["md"]))
 
-        ctk.CTkLabel(paths_card, text="Training script").grid(row=2, column=0, sticky="w", padx=14, pady=(6, 14))
-        ctk.CTkEntry(paths_card, textvariable=self.script_var, width=420).grid(row=2, column=1, padx=6, pady=(6, 14))
+        ctk.CTkLabel(paths_card, text="Training script").grid(
+            row=2, column=0, sticky="w", padx=sp["md"], pady=(sp["sm"], sp["md"]))
+        ctk.CTkEntry(paths_card, textvariable=self.script_var, width=420).grid(
+            row=2, column=1, padx=sp["xs"], pady=(sp["sm"], sp["md"]))
 
-        ctk.CTkLabel(paths_card, text="Python (training)").grid(row=3, column=0, sticky="w", padx=14, pady=6)
-        ctk.CTkEntry(paths_card, textvariable=self.python_var, width=420).grid(row=3, column=1, padx=6, pady=6)
+        ctk.CTkLabel(paths_card, text="Python (training)").grid(
+            row=3, column=0, sticky="w", padx=sp["md"], pady=sp["sm"])
+        ctk.CTkEntry(paths_card, textvariable=self.python_var, width=420).grid(
+            row=3, column=1, padx=sp["xs"], pady=sp["sm"])
         ctk.CTkButton(paths_card, text="Browse", width=80, command=self.browse_python).grid(
-            row=3, column=2, padx=(6, 14), pady=6)
+            row=3, column=2, padx=(sp["xs"], sp["md"]), pady=sp["sm"])
 
         env_row = ctk.CTkFrame(paths_card, fg_color="transparent")
-        env_row.grid(row=4, column=0, columnspan=3, sticky="w", padx=14, pady=(2, 4))
+        env_row.grid(row=4, column=0, columnspan=3, sticky="w",
+                     padx=sp["md"], pady=(2, sp["xs"]))
         ctk.CTkButton(env_row, text="🔍 Detect Environments…", width=170,
                       command=self.detect_environments).pack(side="left")
         ctk.CTkButton(env_row, text="Install Packages…", width=150,
-                      command=self.open_install_dialog).pack(side="left", padx=8)
+                      command=self.open_install_dialog).pack(side="left", padx=sp["sm"])
         ctk.CTkButton(env_row, text="Refresh status", width=120,
                       command=self.refresh_env_status).pack(side="left")
 
         self._env_status_label = ctk.CTkLabel(
             paths_card, textvariable=self.env_status_var, text_color=T.c("text_faint"),
-            font=T.f(11), justify="left", wraplength=680)
-        self._env_status_label.grid(row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 12))
+            font=T.f("small"), justify="left", wraplength=680)
+        self._env_status_label.grid(row=5, column=0, columnspan=3, sticky="w",
+                                    padx=sp["md"], pady=(0, sp["md"]))
 
         # --- Run config section ---
-        cfg_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
-        cfg_card.pack(fill="x", pady=(0, 14))
+        cfg_card = self._card(f)
         section_label(cfg_card, "⚙️ Run Configuration")
 
         def labeled_entry(parent, row, col, label, var, width=100):
-            ctk.CTkLabel(parent, text=label).grid(row=row, column=col, sticky="w", padx=(14, 6), pady=6)
-            ctk.CTkEntry(parent, textvariable=var, width=width).grid(row=row, column=col + 1, sticky="w", pady=6)
+            ctk.CTkLabel(parent, text=label).grid(
+                row=row, column=col, sticky="w", padx=(sp["md"], sp["xs"]), pady=sp["sm"])
+            ctk.CTkEntry(parent, textvariable=var, width=width).grid(
+                row=row, column=col + 1, sticky="w", pady=sp["sm"])
 
         def stepper(parent, row, col, label, var, minv, maxv, step=1):
             """A '- value +' control for quickly increasing/decreasing an integer setting."""
-            ctk.CTkLabel(parent, text=label).grid(row=row, column=col, sticky="w", padx=(14, 6), pady=6)
+            ctk.CTkLabel(parent, text=label).grid(
+                row=row, column=col, sticky="w", padx=(sp["md"], sp["xs"]), pady=sp["sm"])
 
             box = ctk.CTkFrame(parent, fg_color="transparent")
-            box.grid(row=row, column=col + 1, sticky="w", pady=6)
+            box.grid(row=row, column=col + 1, sticky="w", pady=sp["sm"])
 
             def clamp_set(new_val):
                 new_val = max(minv, min(maxv, new_val))
@@ -472,53 +599,56 @@ class LauncherApp(ctk.CTk):
                 except ValueError:
                     return minv
 
-            ctk.CTkButton(box, text="−", width=28, corner_radius=8,
+            ctk.CTkButton(box, text="−", width=30, corner_radius=T.RADIUS["sm"],
                           command=lambda: clamp_set(get_val() - step)).pack(side="left")
-            ctk.CTkEntry(box, textvariable=var, width=48, justify="center").pack(side="left", padx=4)
-            ctk.CTkButton(box, text="+", width=28, corner_radius=8,
+            ctk.CTkEntry(box, textvariable=var, width=52, justify="center").pack(
+                side="left", padx=sp["xs"])
+            ctk.CTkButton(box, text="+", width=30, corner_radius=T.RADIUS["sm"],
                           command=lambda: clamp_set(get_val() + step)).pack(side="left")
+
+        def checkbox(parent, text, var):
+            return ctk.CTkCheckBox(parent, text=text, variable=var,
+                                   fg_color=T.c("accent"), hover_color=T.c("accent_hover"),
+                                   checkmark_color=T.c("on_accent"), text_color=T.c("text"))
 
         stepper(cfg_card, 1, 0, "num_cpu (# of GUIs)", self.num_cpu_var, minv=1, maxv=16)
         stepper(cfg_card, 1, 2, "Grid columns", self.cols_var, minv=1, maxv=8)
         labeled_entry(cfg_card, 2, 0, "ep_length", self.ep_length_var, width=140)
         labeled_entry(cfg_card, 2, 2, "explore_weight", self.explore_weight_var)
         labeled_entry(cfg_card, 3, 0, "reward_scale", self.reward_scale_var)
-        ctk.CTkCheckBox(cfg_card, text="Headless (no game windows)",
-                         variable=self.headless_var).grid(row=3, column=2, columnspan=2, sticky="w", pady=(6, 14), padx=(14, 0))
-        ctk.CTkCheckBox(cfg_card, text="Don't reset episode (let current run continue past ep_length)",
-                         variable=self.no_reset_var).grid(row=4, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 6))
-        ctk.CTkCheckBox(cfg_card, text="Save curriculum snapshots (capture a state file the first time each quest completes)",
-                         variable=self.save_curriculum_var).grid(row=5, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 6))
+        checkbox(cfg_card, "Headless (no game windows)", self.headless_var).grid(
+            row=3, column=2, columnspan=2, sticky="w",
+            pady=(sp["sm"], sp["md"]), padx=(sp["md"], 0))
+        checkbox(cfg_card, "Don't reset episode (let current run continue past ep_length)",
+                 self.no_reset_var).grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=sp["md"], pady=(0, sp["xs"]))
+        checkbox(cfg_card, "Save curriculum snapshots (capture a state file the first time each quest completes)",
+                 self.save_curriculum_var).grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=sp["md"], pady=(0, sp["xs"]))
 
         ctk.CTkLabel(cfg_card, text="ep_length/explore_weight/reward_scale apply to both fresh runs and resumed checkpoints.",
-                     text_color=T.c("text_faint"), font=T.f(11)).grid(
-            row=6, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 6))
+                     text_color=T.c("text_faint"), font=T.f("small")).grid(
+            row=6, column=0, columnspan=4, sticky="w", padx=sp["md"], pady=(0, sp["xs"]))
 
         quick_row = ctk.CTkFrame(cfg_card, fg_color="transparent")
-        quick_row.grid(row=7, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 14))
+        quick_row.grid(row=7, column=0, columnspan=4, sticky="w",
+                       padx=sp["md"], pady=(0, sp["md"]))
         ctk.CTkButton(quick_row, text="Reward Weights...", width=140,
                       command=self.open_reward_editor).pack(side="left")
         ctk.CTkButton(quick_row, text="Open TensorBoard", width=140,
-                      command=self.launch_tensorboard).pack(side="left", padx=8)
+                      command=self.launch_tensorboard).pack(side="left", padx=sp["sm"])
         ctk.CTkButton(quick_row, text="Open Runs Folder", width=140,
                       command=self.open_runs_folder).pack(side="left")
 
         # --- Checkpoint section ---
-        ckpt_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
-        ckpt_card.pack(fill="x", pady=(0, 14))
-        header_row = ctk.CTkFrame(ckpt_card, fg_color="transparent")
-        header_row.pack(fill="x", padx=14, pady=(12, 4))
-        left = ctk.CTkFrame(header_row, fg_color="transparent")
-        left.pack(side="left")
-        ctk.CTkFrame(left, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(left, text="💾 Checkpoint", font=T.f(14, "bold")).pack(side="left")
-        ctk.CTkButton(header_row, text="Refresh", width=80, command=self.refresh_checkpoints).pack(side="right")
+        ckpt_card = self._card(f)
+        self._card_header(ckpt_card, "💾 Checkpoint", on_refresh=self.refresh_checkpoints)
 
         # Fixed height: the outer settings screen is itself scrollable now,
         # so this inner list just needs a sane, bounded viewport rather than
         # trying to expand to fill an infinitely-scrollable parent.
-        self.ckpt_scroll = ctk.CTkScrollableFrame(ckpt_card, fg_color="transparent", height=170)
-        self.ckpt_scroll.pack(fill="x", padx=8, pady=(0, 12))
+        self.ckpt_scroll = ctk.CTkScrollableFrame(ckpt_card, fg_color="transparent", height=180)
+        self.ckpt_scroll.pack(fill="x", padx=sp["sm"], pady=(0, sp["md"]))
 
         # --- Curriculum start point section ---
         # Independent of the Checkpoint section above: checkpoint picks
@@ -526,29 +656,25 @@ class LauncherApp(ctk.CTk):
         # STATE the episode starts from (e.g. "already past Brock"). The
         # two combine freely -- e.g. resume a checkpoint's weights while
         # still starting each fresh episode from a curriculum snapshot.
-        curr_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
-        curr_card.pack(fill="x", pady=(0, 14))
-        curr_header_row = ctk.CTkFrame(curr_card, fg_color="transparent")
-        curr_header_row.pack(fill="x", padx=14, pady=(12, 4))
-        curr_left = ctk.CTkFrame(curr_header_row, fg_color="transparent")
-        curr_left.pack(side="left")
-        ctk.CTkFrame(curr_left, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(curr_left, text="🧭 Curriculum Start Point", font=T.f(14, "bold")).pack(side="left")
-        ctk.CTkButton(curr_header_row, text="Refresh", width=80, command=self.refresh_curriculum_points).pack(side="right")
+        curr_card = self._card(f)
+        self._card_header(curr_card, "🧭 Curriculum Start Point",
+                          on_refresh=self.refresh_curriculum_points)
         ctk.CTkLabel(curr_card, text="Requires \"Save curriculum snapshots\" to have been enabled on a "
                                       "previous run to have anything besides \"very start\" to pick from.",
-                     text_color=T.c("text_faint"), font=T.f(11)).pack(anchor="w", padx=14, pady=(0, 6))
+                     text_color=T.c("text_faint"), font=T.f("small")).pack(
+            anchor="w", padx=sp["md"], pady=(0, sp["sm"]))
 
         self.curr_scroll = ctk.CTkScrollableFrame(curr_card, fg_color="transparent", height=140)
-        self.curr_scroll.pack(fill="x", padx=8, pady=(0, 12))
+        self.curr_scroll.pack(fill="x", padx=sp["sm"], pady=(0, sp["md"]))
 
         # --- Launch ---
         bottom = ctk.CTkFrame(f, fg_color="transparent")
-        bottom.pack(fill="x", pady=(4, 4))
+        bottom.pack(fill="x", pady=(sp["xs"], sp["xs"]))
         self.status_label = ctk.CTkLabel(bottom, text="", text_color=T.c("text_dim"))
         self.status_label.pack(side="left")
-        ctk.CTkButton(bottom, text="🚀 Launch Training", height=44, width=180, corner_radius=10,
-                      font=T.f(14, "bold"), command=self.launch_training).pack(side="right")
+        ctk.CTkButton(bottom, text="🚀 Launch Training", height=44, width=180,
+                      corner_radius=T.RADIUS["md"], font=T.f("body_bold", "bold"),
+                      command=self.launch_training).pack(side="right")
 
         self._checkpoint_paths = []
         self.refresh_checkpoints()
@@ -569,16 +695,26 @@ class LauncherApp(ctk.CTk):
             except (json.JSONDecodeError, OSError):
                 pass
 
-        win = ctk.CTkToplevel(self)
-        win.title("Reward Weights")
-        win.geometry("440x1020")
-        win.attributes("-topmost", True)
+        win = self._dialog("Reward Weights", 520, 720)
 
-        ctk.CTkLabel(win, text="Reward Weights", font=T.f(18, "bold")).pack(
-            anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(win, text="Saves to reward_config.json in the working directory.\n"
+        ctk.CTkLabel(win, text="Reward Weights", font=T.f("h2", "bold")).pack(
+            anchor="w", padx=T.SPACE["lg"], pady=(T.SPACE["lg"], 2))
+        ctk.CTkLabel(win, text="Saves to reward_config.json in the working directory. "
                                 "Running training picks up changes automatically (no restart needed).",
-                     text_color=T.c("text_faint"), font=T.f(11), justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+                     text_color=T.c("text_faint"), font=T.f("small"), justify="left",
+                     wraplength=460).pack(anchor="w", padx=T.SPACE["lg"], pady=(0, T.SPACE["sm"]))
+
+        # The weight list scrolls and the buttons/status stay pinned to the
+        # bottom: the whole dialog then fits a 720-tall screen instead of asking
+        # for a 1020 px window that hangs off the display.
+        footer = ctk.CTkFrame(win, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=T.SPACE["lg"], pady=T.SPACE["md"])
+
+        body = ctk.CTkScrollableFrame(
+            win, fg_color="transparent",
+            scrollbar_button_color=T.c("accent"),
+            scrollbar_button_hover_color=T.c("accent_hover"))
+        body.pack(fill="both", expand=True, padx=T.SPACE["sm"], pady=(0, T.SPACE["xs"]))
 
         vars_map = {}
         labels = {
@@ -606,15 +742,15 @@ class LauncherApp(ctk.CTk):
         for key, label in labels.items():
             if key not in defaults:
                 continue
-            row = ctk.CTkFrame(win, fg_color="transparent")
-            row.pack(fill="x", padx=20, pady=6)
-            ctk.CTkLabel(row, text=label, width=130, anchor="w").pack(side="left")
+            row = ctk.CTkFrame(body, fg_color="transparent")
+            row.pack(fill="x", padx=T.SPACE["sm"], pady=T.SPACE["xs"])
+            ctk.CTkLabel(row, text=label, width=210, anchor="w").pack(side="left")
             var = tk.StringVar(value=str(current[key]))
             vars_map[key] = var
-            ctk.CTkEntry(row, textvariable=var, width=100).pack(side="left")
+            ctk.CTkEntry(row, textvariable=var, width=110).pack(side="left")
 
-        status_lbl = ctk.CTkLabel(win, text="", text_color=T.c("text_faint"))
-        status_lbl.pack(pady=(4, 0))
+        status_lbl = ctk.CTkLabel(footer, text="", text_color=T.c("text_faint"), font=T.f("small"))
+        status_lbl.pack(side="left")
 
         def save():
             try:
@@ -633,10 +769,9 @@ class LauncherApp(ctk.CTk):
             for key, var in vars_map.items():
                 var.set(str(defaults[key]))
 
-        btn_row = ctk.CTkFrame(win, fg_color="transparent")
-        btn_row.pack(pady=16)
-        ctk.CTkButton(btn_row, text="Reset to defaults", command=reset_defaults, width=140).pack(side="left", padx=6)
-        ctk.CTkButton(btn_row, text="Save", command=save, width=100).pack(side="left", padx=6)
+        ctk.CTkButton(footer, text="Save", command=save, width=110).pack(side="right")
+        ctk.CTkButton(footer, text="Reset to defaults", command=reset_defaults,
+                      width=160).pack(side="right", padx=T.SPACE["sm"])
 
     def launch_tensorboard(self):
         runs_dir = Path(self.workdir_var.get()) / "runs"
@@ -759,29 +894,32 @@ class LauncherApp(ctk.CTk):
                                  "can't be detected. Type the python.exe path instead.")
             return
 
-        win = ctk.CTkToplevel(self)
-        win.title("Detect Python Environments")
-        win.geometry("840x580")
-        win.attributes("-topmost", True)
-        win.transient(self)
+        win = self._dialog("Detect Python Environments", 840, 600)
 
         ctk.CTkLabel(win, text="Which environment should run training?",
-                     font=T.f(17, "bold")).pack(anchor="w", padx=20, pady=(16, 2))
+                     font=T.f("h3", "bold")).pack(anchor="w", padx=T.SPACE["lg"], pady=(T.SPACE["lg"], 2))
         ctk.CTkLabel(win, text="Conda environments, virtualenvs and system Pythons are listed. "
                                "The training libraries must be installed in the one you pick.",
-                     text_color=T.c("text_faint"), font=T.f(11), justify="left").pack(
-            anchor="w", padx=20, pady=(0, 10))
+                     text_color=T.c("text_faint"), font=T.f("small"), justify="left").pack(
+            anchor="w", padx=T.SPACE["lg"], pady=(0, T.SPACE["sm"]))
 
         status = ctk.CTkLabel(win, text="Scanning for Python environments…", text_color=T.c("text_dim"))
-        status.pack(anchor="w", padx=20)
+        status.pack(anchor="w", padx=T.SPACE["lg"])
 
         listbox = ctk.CTkScrollableFrame(win, fg_color="transparent", height=340)
-        listbox.pack(fill="both", expand=True, padx=16, pady=8)
+        listbox.pack(fill="both", expand=True, padx=T.SPACE["md"], pady=T.SPACE["sm"])
 
         choice = tk.StringVar(value="")
         envs = {}
 
         def populate(found):
+            # The scan runs on a worker thread; the user may have closed the
+            # dialog before it finished, in which case its widgets are gone.
+            try:
+                if not (win.winfo_exists() and listbox.winfo_exists()):
+                    return
+            except tk.TclError:
+                return
             for w in listbox.winfo_children():
                 w.destroy()
             envs.clear()
@@ -793,10 +931,10 @@ class LauncherApp(ctk.CTk):
                 envs[label] = env
                 labels.append(label)
                 ctk.CTkRadioButton(listbox, text=label, variable=choice,
-                                   value=label).pack(anchor="w", padx=8, pady=5)
+                                   value=label).pack(anchor="w", padx=T.SPACE["sm"], pady=T.SPACE["xs"])
             if not found:
                 ctk.CTkLabel(listbox, text="No environments found. Use 'Browse python.exe…' below.",
-                             text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=8)
+                             text_color=T.c("text_faint")).pack(anchor="w", padx=T.SPACE["sm"], pady=T.SPACE["sm"])
             status.configure(text=f"{len(found)} environment(s) found.")
             if labels:
                 current = self.python_var.get().strip()
@@ -848,12 +986,13 @@ class LauncherApp(ctk.CTk):
             self.refresh_env_status(info)
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(fill="x", padx=20, pady=(0, 16))
+        btns.pack(fill="x", padx=T.SPACE["lg"], pady=(0, T.SPACE["md"]))
         ctk.CTkButton(btns, text="Rescan", width=100, command=scan).pack(side="left")
-        ctk.CTkButton(btns, text="Browse python.exe…", width=160, command=browse).pack(side="left", padx=8)
+        ctk.CTkButton(btns, text="Browse python.exe…", width=160, command=browse).pack(
+            side="left", padx=T.SPACE["sm"])
         ctk.CTkButton(btns, text="Cancel", width=90, command=win.destroy).pack(side="right")
         ctk.CTkButton(btns, text="Use this environment", width=170,
-                      command=choose).pack(side="right", padx=8)
+                      command=choose).pack(side="right", padx=T.SPACE["sm"])
 
         scan()
 
@@ -880,48 +1019,47 @@ class LauncherApp(ctk.CTk):
 
         missing = env_utils.missing_packages(info["python"])
 
-        win = ctk.CTkToplevel(self)
-        win.title("Install Training Packages")
-        win.geometry("680x430")
-        win.attributes("-topmost", True)
-        win.transient(self)
+        win = self._dialog("Install Training Packages", 700, 520)
 
         ctk.CTkLabel(win, text="Install training packages",
-                     font=T.f(17, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+                     font=T.f("h3", "bold")).pack(anchor="w", padx=T.SPACE["lg"], pady=(T.SPACE["lg"], T.SPACE["xs"]))
         ctk.CTkLabel(win, text=env_utils.describe(info), text_color=T.c("text_dim"),
-                     font=T.f(11), justify="left", wraplength=630).pack(
-            anchor="w", padx=20, pady=(0, 10))
+                     font=T.f("small"), justify="left", wraplength=630).pack(
+            anchor="w", padx=T.SPACE["lg"], pady=(0, T.SPACE["sm"]))
         ctk.CTkLabel(win, text=("Already installed: " + ", ".join(sorted(set(env_utils.REQUIRED_PACKAGES) - set(missing)))
                                 if missing else "Everything is already installed."),
-                     text_color=T.c("text_faint"), font=T.f(11)).pack(anchor="w", padx=20)
+                     text_color=T.c("text_faint"), font=T.f("small")).pack(anchor="w", padx=T.SPACE["lg"])
         if missing:
             ctk.CTkLabel(win, text="Missing: " + ", ".join(missing), text_color=T.col("warn"),
-                         font=T.f(11)).pack(anchor="w", padx=20, pady=(2, 8))
+                         font=T.f("small")).pack(anchor="w", padx=T.SPACE["lg"], pady=(2, T.SPACE["sm"]))
 
         cpu_only = tk.BooleanVar(value=False)
-        box = ctk.CTkFrame(win, corner_radius=12, border_width=1, border_color=T.c("border"))
-        box.pack(fill="x", padx=20, pady=(12, 8))
-        ctk.CTkLabel(box, text="PyTorch build", font=T.f(13, "bold")).pack(
-            anchor="w", padx=14, pady=(10, 4))
+        box = ctk.CTkFrame(win, corner_radius=T.RADIUS["card"], border_width=1,
+                           border_color=T.c("border"))
+        box.pack(fill="x", padx=T.SPACE["lg"], pady=(T.SPACE["sm"], T.SPACE["sm"]))
+        ctk.CTkLabel(box, text="PyTorch build", font=T.f("body_bold", "bold")).pack(
+            anchor="w", padx=T.SPACE["md"], pady=(T.SPACE["sm"], T.SPACE["xs"]))
         ctk.CTkRadioButton(box, text="CUDA 12.4 — NVIDIA GPU (big download, recommended if you have one)",
-                           variable=cpu_only, value=False).pack(anchor="w", padx=14, pady=3)
+                           variable=cpu_only, value=False).pack(
+            anchor="w", padx=T.SPACE["md"], pady=T.SPACE["xs"])
         ctk.CTkRadioButton(box, text="CPU only — smaller download, works on any PC",
-                           variable=cpu_only, value=True).pack(anchor="w", padx=14, pady=(3, 12))
+                           variable=cpu_only, value=True).pack(
+            anchor="w", padx=T.SPACE["md"], pady=(T.SPACE["xs"], T.SPACE["sm"]))
 
         ctk.CTkLabel(win, text="Runs in a new console window: torch, upstream requirements "
                                "(req-win.txt), then requirements-launcher.txt.",
-                     text_color=T.c("text_faint"), font=T.f(11), justify="left",
-                     wraplength=630).pack(anchor="w", padx=20)
+                     text_color=T.c("text_faint"), font=T.f("small"), justify="left",
+                     wraplength=630).pack(anchor="w", padx=T.SPACE["lg"])
 
         def start():
             win.destroy()
             self.start_package_install(info, v2, cpu_only.get())
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(fill="x", padx=20, pady=16)
+        btns.pack(fill="x", padx=T.SPACE["lg"], pady=T.SPACE["md"])
         ctk.CTkButton(btns, text="Install now", width=140, command=start).pack(side="right")
         ctk.CTkButton(btns, text="Cancel", width=100,
-                      command=win.destroy).pack(side="right", padx=8)
+                      command=win.destroy).pack(side="right", padx=T.SPACE["sm"])
 
     def start_package_install(self, info, v2, cpu_only):
         req = env_utils.write_req_win(v2)
@@ -961,11 +1099,11 @@ class LauncherApp(ctk.CTk):
         self._checkpoint_paths = checkpoints
 
         ctk.CTkRadioButton(self.ckpt_scroll, text="Start fresh (no checkpoint)",
-                            variable=self.checkpoint_var, value="").pack(anchor="w", pady=4, padx=8)
+                            variable=self.checkpoint_var, value="").pack(anchor="w", pady=T.SPACE["xs"], padx=T.SPACE["sm"])
 
         if not checkpoints:
             ctk.CTkLabel(self.ckpt_scroll, text=f"(no checkpoints found in {runs_dir})",
-                         text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=4)
+                         text_color=T.c("text_faint")).pack(anchor="w", padx=T.SPACE["sm"], pady=T.SPACE["xs"])
         for steps, path in checkpoints:
             label = f"{steps:,} steps  —  {path.parent.name}/{path.name}"
             if path.name == "poke_26214400.zip":
@@ -973,7 +1111,7 @@ class LauncherApp(ctk.CTk):
                 # demo model), so it isn't the user's own progress.
                 label += "   (upstream demo model)"
             ctk.CTkRadioButton(self.ckpt_scroll, text=label,
-                                variable=self.checkpoint_var, value=str(path)).pack(anchor="w", pady=4, padx=8)
+                                variable=self.checkpoint_var, value=str(path)).pack(anchor="w", pady=T.SPACE["xs"], padx=T.SPACE["sm"])
 
         self.checkpoint_var.set("")
 
@@ -993,7 +1131,7 @@ class LauncherApp(ctk.CTk):
         self._curriculum_manifest = manifest
 
         ctk.CTkRadioButton(self.curr_scroll, text="Start from the very beginning (init.state)",
-                            variable=self.curriculum_start_var, value="").pack(anchor="w", pady=4, padx=8)
+                            variable=self.curriculum_start_var, value="").pack(anchor="w", pady=T.SPACE["xs"], padx=T.SPACE["sm"])
 
         # Order entries by the quests' actual story progression, not
         # whatever order they happen to sit in the JSON file -- fall back to
@@ -1014,12 +1152,12 @@ class LauncherApp(ctk.CTk):
         if not ordered_ids:
             ctk.CTkLabel(self.curr_scroll,
                          text=f"(no curriculum snapshots found in {curriculum_dir})",
-                         text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=4)
+                         text_color=T.c("text_faint")).pack(anchor="w", padx=T.SPACE["sm"], pady=T.SPACE["xs"])
         for qid in ordered_ids:
             entry = manifest[qid]
             label = f"After: {entry.get('description', qid)}"
             ctk.CTkRadioButton(self.curr_scroll, text=label,
-                                variable=self.curriculum_start_var, value=qid).pack(anchor="w", pady=4, padx=8)
+                                variable=self.curriculum_start_var, value=qid).pack(anchor="w", pady=T.SPACE["xs"], padx=T.SPACE["sm"])
 
         self.curriculum_start_var.set("")
 
@@ -1163,31 +1301,31 @@ class LauncherApp(ctk.CTk):
         self._clear_root_children()
         self.select_frame = None
         f = ctk.CTkFrame(self, fg_color="transparent")
-        f.pack(fill="both", expand=True, padx=24, pady=20)
+        f.pack(fill="both", expand=True, padx=T.SPACE["xl"], pady=T.SPACE["lg"])
         self.grid_frame = f
-        self.timer_label = ctk.CTkLabel(f, text="00:00:00", font=T.f(28, "bold"))
-        self.timer_label.pack(pady=(10, 0))
+        self.timer_label = ctk.CTkLabel(f, text="00:00:00", font=T.f("timer", "bold"))
+        self.timer_label.pack(pady=(T.SPACE["sm"], 0))
         ctk.CTkLabel(f, text="Training running headless (no windows to display).",
-                     font=T.f(16)).pack(pady=(4, 20))
+                     font=T.f("h4")).pack(pady=(T.SPACE["xs"], T.SPACE["lg"]))
 
         self.status_label_live = ctk.CTkLabel(f, text="steps: -- | mean reward: --",
-                                               font=T.f(13))
-        self.status_label_live.pack(pady=(0, 6))
+                                               font=T.f("body"))
+        self.status_label_live.pack(pady=(0, T.SPACE["xs"]))
 
         self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
-                                              font=T.f(11), justify="left")
-        self.components_label.pack(pady=(0, 10))
+                                              font=T.f("small"), justify="left")
+        self.components_label.pack(pady=(0, T.SPACE["sm"]))
 
         graph_holder = ctk.CTkFrame(f, fg_color="transparent")
         graph_holder.pack(fill="x", padx=40)
         self._build_mini_graph(graph_holder)
 
         btn_row = ctk.CTkFrame(f, fg_color="transparent")
-        btn_row.pack(pady=20)
-        ctk.CTkButton(btn_row, text="Open TensorBoard", width=140, command=self.launch_tensorboard).pack(side="left", padx=6)
-        ctk.CTkButton(btn_row, text="Open Runs Folder", width=140, command=self.open_runs_folder).pack(side="left", padx=6)
-        ctk.CTkButton(btn_row, text="Open Log", width=110, command=self.open_train_log).pack(side="left", padx=6)
-        ctk.CTkButton(btn_row, text="Stop Training & Close", command=self.on_close).pack(side="left", padx=6)
+        btn_row.pack(pady=T.SPACE["lg"])
+        ctk.CTkButton(btn_row, text="Open TensorBoard", width=140, command=self.launch_tensorboard).pack(side="left", padx=T.SPACE["xs"])
+        ctk.CTkButton(btn_row, text="Open Runs Folder", width=140, command=self.open_runs_folder).pack(side="left", padx=T.SPACE["xs"])
+        ctk.CTkButton(btn_row, text="Open Log", width=110, command=self.open_train_log).pack(side="left", padx=T.SPACE["xs"])
+        ctk.CTkButton(btn_row, text="Stop Training & Close", command=self.on_close).pack(side="left", padx=T.SPACE["xs"])
 
         self.update_timer()
         self.poll_training_status()
@@ -1201,37 +1339,37 @@ class LauncherApp(ctk.CTk):
         self.grid_frame = f
 
         toolbar = ctk.CTkFrame(f, fg_color="transparent")
-        toolbar.pack(fill="x", padx=12, pady=10)
+        toolbar.pack(fill="x", padx=T.SPACE["md"], pady=T.SPACE["sm"])
 
-        self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=T.f(20, "bold"))
-        self.timer_label.pack(side="left", padx=(0, 16))
+        self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=T.f("timer_grid", "bold"))
+        self.timer_label.pack(side="left", padx=(0, T.SPACE["lg"]))
 
         self.grid_status_label = ctk.CTkLabel(toolbar, text="Waiting for game windows to appear...")
         self.grid_status_label.pack(side="left")
         ctk.CTkButton(toolbar, text="Stop Training & Close", command=self.on_close).pack(side="right")
-        ctk.CTkButton(toolbar, text="Open TensorBoard", width=130, command=self.launch_tensorboard).pack(side="right", padx=8)
-        ctk.CTkButton(toolbar, text="Runs Folder", width=100, command=self.open_runs_folder).pack(side="right", padx=8)
-        ctk.CTkButton(toolbar, text="Log", width=80, command=self.open_train_log).pack(side="right", padx=8)
-        ctk.CTkButton(toolbar, text="Re-tile now", width=100, command=self.retile_now).pack(side="right", padx=8)
+        ctk.CTkButton(toolbar, text="Open TensorBoard", width=130, command=self.launch_tensorboard).pack(side="right", padx=T.SPACE["sm"])
+        ctk.CTkButton(toolbar, text="Runs Folder", width=100, command=self.open_runs_folder).pack(side="right", padx=T.SPACE["sm"])
+        ctk.CTkButton(toolbar, text="Log", width=80, command=self.open_train_log).pack(side="right", padx=T.SPACE["sm"])
+        ctk.CTkButton(toolbar, text="Re-tile now", width=100, command=self.retile_now).pack(side="right", padx=T.SPACE["sm"])
         self.update_timer()
 
         stats_row = ctk.CTkFrame(f, fg_color="transparent")
-        stats_row.pack(fill="x", padx=12, pady=(0, 4))
+        stats_row.pack(fill="x", padx=T.SPACE["md"], pady=(0, T.SPACE["xs"]))
         self.status_label_live = ctk.CTkLabel(stats_row, text="steps: -- | mean reward: --",
-                                               font=T.f(13))
+                                               font=T.f("body"))
         self.status_label_live.pack(side="left")
 
         self._build_mini_graph(stats_row)
 
         self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
-                                              font=T.f(11), justify="left")
-        self.components_label.pack(anchor="w", padx=12, pady=(0, 8))
+                                              font=T.f("small"), justify="left")
+        self.components_label.pack(anchor="w", padx=T.SPACE["md"], pady=(0, T.SPACE["sm"]))
 
         self.poll_training_status()
 
         # Plain tk.Frame (not CTkFrame) for the embed target -- keeps a real, simple HWND to reparent into.
         self.game_area = tk.Frame(f, bg=T.col("grid_bg"), highlightthickness=0, bd=0)
-        self.game_area.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.game_area.pack(fill="both", expand=True, padx=T.SPACE["md"], pady=(0, T.SPACE["md"]))
         self.game_area.bind("<Configure>", lambda e: self.retile_now())
 
         self.grid_cols = cols
@@ -1414,6 +1552,8 @@ class LauncherApp(ctk.CTk):
             "headless": bool(self.headless_var.get()),
             "no_reset": bool(self.no_reset_var.get()),
             "save_curriculum": bool(self.save_curriculum_var.get()),
+            "appearance": self.appearance,
+            "accent": self.accent,
         })
 
     def on_close(self):

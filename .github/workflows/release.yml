@@ -1,8 +1,11 @@
 name: Build Windows executables
 
-# - push to main        -> builds both EXEs as downloadable workflow artifacts
-# - push a v* tag       -> builds them and attaches them to a GitHub Release
+# - push to main        -> builds PokemonRLSetup.exe as a downloadable workflow artifact
+# - push a v* tag       -> builds it and attaches it to a GitHub Release
 # - manual run          -> same as a push to main
+#
+# PokemonRLLauncher.exe is built first because the wizard embeds it, but it is
+# never published on its own: PokemonRLSetup.exe is the only download users need.
 
 on:
   push:
@@ -53,14 +56,14 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-exes
-          path: dist/*.exe
+          name: PokemonRLSetup
+          path: dist/PokemonRLSetup.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: dist/PokemonRLSetup.exe
           generate_release_notes: true
           fail_on_unmatched_files: true

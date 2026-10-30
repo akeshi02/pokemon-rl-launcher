@@ -6,17 +6,20 @@ All notable changes to this project. Format loosely follows
 
 ## [1.0.0] — 2026-10-30
 
-First packaged release: a double-clickable Windows installer plus a windowed
+First packaged release: a double-clickable Windows installer wrapping a windowed
 launcher, both built with PyInstaller.
 
 ### Added
 - **`PokemonRLSetup.exe`** — setup wizard (and `--cli` mode for silent installs):
   downloads the upstream project, asks for your own ROM and checks its SHA-1,
   lets you pick an existing conda/venv/system Python (or create a venv), installs
-  the training packages into it, and installs the launcher app.
-- **`PokemonRLLauncher.exe`** — windowed launcher: parameters, reward-weight
-  editor, headless toggle, embedded emulator grid, live reward graph, checkpoint
-  picker, environment picker, package installer.
+  the training packages into it, and installs the launcher app. This is the only
+  file published in the release.
+- **Launcher app** (`PokemonRLLauncher.exe`, installed into
+  `PokemonRedExperiments\v2\` by the wizard, embedded in it, and built as an
+  intermediate artifact — never published on its own): windowed launcher with
+  parameters, reward-weight editor, headless toggle, embedded emulator grid, live
+  reward graph, checkpoint picker, environment picker, package installer.
 - `launcher_config.json` as the single source of truth for the chosen
   environment (written by the wizard, updated by the launcher).
 - `env_utils.py`: environment discovery (conda/venv/system, deduped), package
@@ -26,7 +29,9 @@ launcher, both built with PyInstaller.
   `launcher_error.log` + a dialog for any launcher crash.
 - `POKE_AUTOSTART=1` to start a configured run automatically (smoke tests).
 - `build_all.bat`, `build_installer.bat`, hand-written PyInstaller specs, and a
-  GitHub Actions workflow that builds and publishes both EXEs on a `v*` tag.
+  GitHub Actions workflow that builds and publishes `PokemonRLSetup.exe` on a
+  `v*` tag (`build_installer.bat` builds the launcher app first when it is
+  missing, so the wizard is never shipped without it).
 - `CREDITS.md` with full attribution to Peter Whidden's original project.
 
 ### Fixed

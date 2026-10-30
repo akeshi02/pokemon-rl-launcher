@@ -135,20 +135,20 @@ Building needs Python 3.10–3.12 with `pyinstaller` (the `antigravity` conda en
 build_all.bat
 ```
 
-`build_all.bat` builds both EXEs in the right order:
+`build_all.bat` builds the installer, and the launcher app it embeds along the way:
 
 | Output | What it is |
 |---|---|
-| `dist\PokemonRLLauncher.exe` | the launcher app — onefile, windowed (no console), ~65 MB |
-| `dist\PokemonRLSetup.exe` | the setup wizard — bundles the launcher EXE and `overlay\`; ship this one |
+| `dist\PokemonRLLauncher.exe` | the launcher app — onefile, windowed (no console). An **intermediate** file: the wizard embeds it and installs it into `PokemonRedExperiments\v2\`. It is never published on its own. |
+| `dist\PokemonRLSetup.exe` | the setup wizard — bundles the launcher EXE and `overlay\`; **this is the only file that ships** |
 
 Both are described by hand-written spec files (`PokemonRLLauncher.spec`,
 `PokemonRLSetup.spec`); do not delete them, and rebuild the launcher *before* the wizard so
 the wizard picks it up. Upload `PokemonRLSetup.exe` to a GitHub Release. If `OVERLAY_REPO` is
 left unset, the installer simply uses the files bundled inside it.
 
-`build_installer.bat` builds only the wizard (it then bundles whatever
-`dist\PokemonRLLauncher.exe` already exists).
+`build_installer.bat` builds only the wizard; it builds `dist\PokemonRLLauncher.exe` first if
+that file is missing, so the wizard is never produced without the GUI app inside it.
 
 Silent/testing mode (works from the EXE too — pass `--log`, since a windowed EXE has no
 console):
@@ -165,7 +165,7 @@ soon as its window opens (used for automated smoke tests).
 
 ### Publishing your own release
 
-`.github/workflows/release.yml` builds both EXEs on `windows-latest` and attaches them to a
+`.github/workflows/release.yml` builds the installer on `windows-latest` and attaches it to a
 GitHub Release whenever you push a `v*` tag.
 
 ```bash
@@ -186,10 +186,8 @@ Checklist before tagging:
 3. Locally run `build_all.bat`, then `dist\PokemonRLSetup.exe --cli --help` and a real
    install, before tagging.
 
-Prefer doing it by hand? `gh release create v1.0.0 dist\PokemonRLSetup.exe
-dist\PokemonRLLauncher.exe --generate-notes` after `build_all.bat` works too. Users only
-need `PokemonRLSetup.exe`; attaching the launcher EXE as well makes the release
-self-explanatory.
+Prefer doing it by hand? `gh release create v1.0.0 dist\PokemonRLSetup.exe --generate-notes`
+after `build_all.bat` works too. Users only ever need `PokemonRLSetup.exe`.
 
 ### Using your own conda environment
 

@@ -43,7 +43,7 @@ source install are below.
 ## Install
 
 You need Python 3.10–3.12, `ffmpeg` on your PATH, and **your own legally obtained
-Pokémon Red ROM** (not provided, and I can't point you to one).
+Pokémon Red ROM** (this project ships no ROM and links to none).
 
 ### Plain Python
 
@@ -56,15 +56,15 @@ pip install -r requirements.txt            # upstream's list; on Windows see its
 pip install -r requirements-launcher.txt
 ```
 
-Replace `YOUR-USERNAME` above with the account that hosts the repo (this project is
-published at <https://github.com/KanishkPatel0206/pokemon-rl-launcher>), or use the
-"Code → Download ZIP" button.
+Rather not clone? Use **Code → Download ZIP** above and run the same commands from
+the extracted folder. Forking? Swap in your fork's URL — the clone line above is
+this project's.
 
 ### Conda
 
 ```bash
-conda create -n antigravity python=3.11 -y
-conda activate antigravity
+conda create -n pokemonrl python=3.11 -y
+conda activate pokemonrl
 # then run the setup_overlay.py + pip steps above inside that environment
 python pokemon_launcher_gui.py      # launcher now runs training with this env
 ```
@@ -127,7 +127,8 @@ unsigned app: choose "More info" then "Run anyway", or build it yourself (below)
 
 ### Build the installers yourself
 
-Building needs Python 3.10–3.12 with `pyinstaller` (the `antigravity` conda env works).
+Building needs Python 3.10–3.12 with `pyinstaller` (any conda/venv environment that
+has it installed works — no special environment name is required).
 
 ```bat
 :: OVERLAY_REPO in installer.py is already set to KanishkPatel0206/pokemon-rl-launcher;
@@ -154,10 +155,10 @@ Silent/testing mode (works from the EXE too — pass `--log`, since a windowed E
 console):
 
 ```bat
-python installer.py --cli --dest D:\pokemon --rom "C:\path\rom.gb" --env antigravity
+python installer.py --cli --dest D:\pokemon --rom "C:\path\rom.gb" --env pokemonrl
 python installer.py --cli --dest D:\pokemon --python "C:\path\envs\x\python.exe" --cpu
-python installer.py --cli --dest D:\pokemon --env antigravity --dry-run --log install.log
-PokemonRLSetup.exe --cli --dest D:\pokemon --env antigravity --no-packages --log install.log
+python installer.py --cli --dest D:\pokemon --env pokemonrl --dry-run --log install.log
+PokemonRLSetup.exe --cli --dest D:\pokemon --env pokemonrl --no-packages --log install.log
 ```
 
 `POKE_AUTOSTART=1` makes the launcher start the run configured in `launcher_config.json` as
@@ -169,7 +170,7 @@ soon as its window opens (used for automated smoke tests).
 GitHub Release whenever you push a `v*` tag.
 
 ```bash
-git remote add origin https://github.com/KanishkPatel0206/pokemon-rl-launcher.git   # your fork
+git remote add origin https://github.com/KanishkPatel0206/pokemon-rl-launcher.git   # or your fork's URL
 git push -u origin main
 
 git tag v1.0.0
@@ -183,8 +184,11 @@ Checklist before tagging:
    just falls back to the copy bundled inside the EXE.
 2. Bump `APP_VERSION` in `installer.py`, `version_launcher.txt`, `version_setup.txt`, and
    add a `CHANGELOG.md` entry.
-3. Locally run `build_all.bat`, then `dist\PokemonRLSetup.exe --cli --help` and a real
-   install, before tagging.
+3. Locally run `build_all.bat`, then check the EXE and do a real install, before tagging.
+   A windowed EXE prints nothing and a plain shell returns immediately, so check the exit
+   code instead — PowerShell:
+   `(Start-Process -FilePath dist\PokemonRLSetup.exe -ArgumentList '--cli','--help' -PassThru -Wait).ExitCode`,
+   and pass `--log install.log` to a real `--cli` install to read what it did.
 
 Prefer doing it by hand? `gh release create v1.0.0 dist\PokemonRLSetup.exe --generate-notes`
 after `build_all.bat` works too. Users only ever need `PokemonRLSetup.exe`.

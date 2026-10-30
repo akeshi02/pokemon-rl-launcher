@@ -1,0 +1,9 @@
+# Packages needed only to *build* the two executables.
+# (The launcher runs training in the user's own environment; it does not bundle
+# torch / PyBoy / stable-baselines3. These are the imports PyInstaller must be
+# able to see while analysing overlay/v2/pokemon_launcher_gui.py.)
+pyinstaller>=6.10
+customtkinter>=5.2
+matplotlib>=3.8
+psutil>=5.9
+pywin32>=306

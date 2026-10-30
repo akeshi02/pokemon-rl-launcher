@@ -1,0 +1,11 @@
+* text=auto
+
+# Windows scripts must keep CRLF or cmd.exe can mis-parse them
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# binaries
+*.exe binary
+*.ico binary
+*.png binary
+*.zip binary

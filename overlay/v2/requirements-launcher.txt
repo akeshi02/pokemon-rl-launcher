@@ -1,0 +1,6 @@
+# Extra packages for the launcher GUI (on top of upstream's requirements.txt).
+# The GUI embeds PyBoy windows via the Win32 API, so it is Windows-only.
+customtkinter
+psutil
+pywin32; sys_platform == "win32"
+matplotlib

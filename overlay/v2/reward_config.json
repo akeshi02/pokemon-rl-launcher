@@ -1,0 +1,21 @@
+{
+  "event_multiplier": 4.0,
+  "heal_multiplier": 10.0,
+  "badge_multiplier": 10.0,
+  "explore_multiplier": 3.0,
+  "stuck_multiplier": -15.0,
+  "level_multiplier": 1.5,
+  "op_lvl_multiplier": 0.2,
+  "death_multiplier": -0.5,
+  "catch_multiplier": 2.0,
+  "stuck_ramp_start_count": 100.0,
+  "stuck_ramp_end_count": 500.0,
+  "battle_multiplier": -1.0,
+  "battle_grace_steps": 30.0,
+  "battle_penalty_per_step": 0.02,
+  "battle_max_penalty": 5.0,
+  "battle_damage_multiplier": 2.0,
+  "battle_damage_cap": 10.0,
+  "evolution_multiplier": 10.0,
+  "map_progress_multiplier": 15.0
+}

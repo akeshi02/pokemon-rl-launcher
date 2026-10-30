@@ -1,0 +1,66 @@
+name: Build Windows executables
+
+# - push to main        -> builds both EXEs as downloadable workflow artifacts
+# - push a v* tag       -> builds them and attaches them to a GitHub Release
+# - manual run          -> same as a push to main
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build launcher (PokemonRLLauncher.exe)
+        run: python -m PyInstaller --noconfirm --clean PokemonRLLauncher.spec
+
+      - name: Build setup wizard (PokemonRLSetup.exe)
+        run: python -m PyInstaller --noconfirm --clean PokemonRLSetup.spec
+
+      - name: Smoke test the wizard's CLI
+        shell: pwsh
+        # A windowed (GUI-subsystem) EXE doesn't block `&`, so $LASTEXITCODE stays
+        # empty; Start-Process -Wait is the reliable way to read its exit code.
+        run: |
+          $p = Start-Process -FilePath "dist\PokemonRLSetup.exe" `
+                             -ArgumentList "--cli", "--help" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "PokemonRLSetup.exe --cli --help failed with exit code $($p.ExitCode)" }
+
+      - name: List build output
+        shell: pwsh
+        run: Get-ChildItem dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exes
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -15,13 +15,19 @@ from PyInstaller.utils.hooks import collect_all
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 
-hiddenimports = ctk_hidden + ["win32timezone"]
+hiddenimports = ctk_hidden + ["win32timezone", "theme", "anim"]
+
+# Bundle design assets (fonts/icons) next to the app as "assets/".  theme.py
+# looks them up via sys._MEIPASS when frozen; missing files fall back cleanly.
+datas = list(ctk_datas)
+if os.path.isdir(os.path.join("overlay", "v2", "assets")):
+    datas.append((os.path.join("overlay", "v2", "assets"), "assets"))
 
 a = Analysis(
     ["overlay/v2/pokemon_launcher_gui.py"],
     pathex=["overlay/v2"],
     binaries=ctk_binaries,
-    datas=ctk_datas,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -39,6 +39,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
+import theme as T
+import anim as A
+
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -182,8 +185,14 @@ DEFAULT_REWARD_WEIGHTS = {
 }
 
 
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+# Design tokens, DPI awareness and (optional) bundled fonts.  M0 keeps the
+# 1.0.0 look: the "dark" appearance + "blue" accent resolve to exactly the
+# literals these tokens replaced.  POKE_THEME/POKE_ACCENT are the M1+ overrides.
+T.enable_dpi_awareness()  # must precede the first Tk window
+T.load_font_files()
+T.apply(appearance=os.environ.get("POKE_THEME", "dark"),
+        accent=os.environ.get("POKE_ACCENT", "blue"))
+A.set_reduce_motion(A.reduce_motion_from_os())  # honour the OS accessibility setting
 
 # Checkpoint names train_cli.py writes: poke_<N>_steps.zip,
 # poke_interrupted_<N>_steps.zip, and hand-saved poke_<N>.zip. The old
@@ -386,8 +395,8 @@ class LauncherApp(ctk.CTk):
         # curriculum lists grow long -- the user can just scroll the page.
         f = ctk.CTkScrollableFrame(
             self, fg_color="transparent",
-            scrollbar_button_color="#3b8ed0",
-            scrollbar_button_hover_color="#1f6aa5",
+            scrollbar_button_color=T.c("accent"),
+            scrollbar_button_hover_color=T.c("accent_hover"),
         )
         f.pack(fill="both", expand=True, padx=24, pady=20)
         self.select_frame = f
@@ -395,19 +404,19 @@ class LauncherApp(ctk.CTk):
         header = ctk.CTkFrame(f, fg_color="transparent")
         header.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(header, text="🎮 Pokemon RL Training Launcher",
-                     font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w")
+                     font=T.f(24, "bold")).pack(anchor="w")
         ctk.CTkLabel(header, text="Configure a run, pick a checkpoint (or start fresh), and launch.",
-                     text_color="gray70", font=ctk.CTkFont(size=13)).pack(anchor="w", pady=(2, 0))
-        ctk.CTkFrame(f, height=2, fg_color="#3b8ed0").pack(fill="x", pady=(12, 16))
+                     text_color=T.c("text_dim"), font=T.f(13)).pack(anchor="w", pady=(2, 0))
+        ctk.CTkFrame(f, height=2, fg_color=T.c("accent")).pack(fill="x", pady=(12, 16))
 
         def section_label(parent, text):
             row = ctk.CTkFrame(parent, fg_color="transparent")
             row.grid(row=0, column=0, sticky="w", padx=14, pady=(12, 6), columnspan=4)
-            ctk.CTkFrame(row, width=4, height=18, fg_color="#3b8ed0", corner_radius=2).pack(side="left", padx=(0, 8))
-            ctk.CTkLabel(row, text=text, font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+            ctk.CTkFrame(row, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(row, text=text, font=T.f(14, "bold")).pack(side="left")
 
         # --- Paths section ---
-        paths_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color="gray25")
+        paths_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
         paths_card.pack(fill="x", pady=(0, 14))
         section_label(paths_card, "📁 Paths")
 
@@ -433,12 +442,12 @@ class LauncherApp(ctk.CTk):
                       command=self.refresh_env_status).pack(side="left")
 
         self._env_status_label = ctk.CTkLabel(
-            paths_card, textvariable=self.env_status_var, text_color="gray60",
-            font=ctk.CTkFont(size=11), justify="left", wraplength=680)
+            paths_card, textvariable=self.env_status_var, text_color=T.c("text_faint"),
+            font=T.f(11), justify="left", wraplength=680)
         self._env_status_label.grid(row=5, column=0, columnspan=3, sticky="w", padx=14, pady=(0, 12))
 
         # --- Run config section ---
-        cfg_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color="gray25")
+        cfg_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
         cfg_card.pack(fill="x", pady=(0, 14))
         section_label(cfg_card, "⚙️ Run Configuration")
 
@@ -482,7 +491,7 @@ class LauncherApp(ctk.CTk):
                          variable=self.save_curriculum_var).grid(row=5, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 6))
 
         ctk.CTkLabel(cfg_card, text="ep_length/explore_weight/reward_scale apply to both fresh runs and resumed checkpoints.",
-                     text_color="gray60", font=ctk.CTkFont(size=11)).grid(
+                     text_color=T.c("text_faint"), font=T.f(11)).grid(
             row=6, column=0, columnspan=4, sticky="w", padx=14, pady=(0, 6))
 
         quick_row = ctk.CTkFrame(cfg_card, fg_color="transparent")
@@ -495,14 +504,14 @@ class LauncherApp(ctk.CTk):
                       command=self.open_runs_folder).pack(side="left")
 
         # --- Checkpoint section ---
-        ckpt_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color="gray25")
+        ckpt_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
         ckpt_card.pack(fill="x", pady=(0, 14))
         header_row = ctk.CTkFrame(ckpt_card, fg_color="transparent")
         header_row.pack(fill="x", padx=14, pady=(12, 4))
         left = ctk.CTkFrame(header_row, fg_color="transparent")
         left.pack(side="left")
-        ctk.CTkFrame(left, width=4, height=18, fg_color="#3b8ed0", corner_radius=2).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(left, text="💾 Checkpoint", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        ctk.CTkFrame(left, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(left, text="💾 Checkpoint", font=T.f(14, "bold")).pack(side="left")
         ctk.CTkButton(header_row, text="Refresh", width=80, command=self.refresh_checkpoints).pack(side="right")
 
         # Fixed height: the outer settings screen is itself scrollable now,
@@ -517,18 +526,18 @@ class LauncherApp(ctk.CTk):
         # STATE the episode starts from (e.g. "already past Brock"). The
         # two combine freely -- e.g. resume a checkpoint's weights while
         # still starting each fresh episode from a curriculum snapshot.
-        curr_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color="gray25")
+        curr_card = ctk.CTkFrame(f, corner_radius=14, border_width=1, border_color=T.c("border"))
         curr_card.pack(fill="x", pady=(0, 14))
         curr_header_row = ctk.CTkFrame(curr_card, fg_color="transparent")
         curr_header_row.pack(fill="x", padx=14, pady=(12, 4))
         curr_left = ctk.CTkFrame(curr_header_row, fg_color="transparent")
         curr_left.pack(side="left")
-        ctk.CTkFrame(curr_left, width=4, height=18, fg_color="#3b8ed0", corner_radius=2).pack(side="left", padx=(0, 8))
-        ctk.CTkLabel(curr_left, text="🧭 Curriculum Start Point", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        ctk.CTkFrame(curr_left, width=4, height=18, fg_color=T.c("accent"), corner_radius=2).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(curr_left, text="🧭 Curriculum Start Point", font=T.f(14, "bold")).pack(side="left")
         ctk.CTkButton(curr_header_row, text="Refresh", width=80, command=self.refresh_curriculum_points).pack(side="right")
         ctk.CTkLabel(curr_card, text="Requires \"Save curriculum snapshots\" to have been enabled on a "
                                       "previous run to have anything besides \"very start\" to pick from.",
-                     text_color="gray60", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=14, pady=(0, 6))
+                     text_color=T.c("text_faint"), font=T.f(11)).pack(anchor="w", padx=14, pady=(0, 6))
 
         self.curr_scroll = ctk.CTkScrollableFrame(curr_card, fg_color="transparent", height=140)
         self.curr_scroll.pack(fill="x", padx=8, pady=(0, 12))
@@ -536,10 +545,10 @@ class LauncherApp(ctk.CTk):
         # --- Launch ---
         bottom = ctk.CTkFrame(f, fg_color="transparent")
         bottom.pack(fill="x", pady=(4, 4))
-        self.status_label = ctk.CTkLabel(bottom, text="", text_color="gray70")
+        self.status_label = ctk.CTkLabel(bottom, text="", text_color=T.c("text_dim"))
         self.status_label.pack(side="left")
         ctk.CTkButton(bottom, text="🚀 Launch Training", height=44, width=180, corner_radius=10,
-                      font=ctk.CTkFont(size=14, weight="bold"), command=self.launch_training).pack(side="right")
+                      font=T.f(14, "bold"), command=self.launch_training).pack(side="right")
 
         self._checkpoint_paths = []
         self.refresh_checkpoints()
@@ -565,11 +574,11 @@ class LauncherApp(ctk.CTk):
         win.geometry("440x1020")
         win.attributes("-topmost", True)
 
-        ctk.CTkLabel(win, text="Reward Weights", font=ctk.CTkFont(size=18, weight="bold")).pack(
+        ctk.CTkLabel(win, text="Reward Weights", font=T.f(18, "bold")).pack(
             anchor="w", padx=20, pady=(16, 4))
         ctk.CTkLabel(win, text="Saves to reward_config.json in the working directory.\n"
                                 "Running training picks up changes automatically (no restart needed).",
-                     text_color="gray60", font=ctk.CTkFont(size=11), justify="left").pack(anchor="w", padx=20, pady=(0, 12))
+                     text_color=T.c("text_faint"), font=T.f(11), justify="left").pack(anchor="w", padx=20, pady=(0, 12))
 
         vars_map = {}
         labels = {
@@ -604,21 +613,21 @@ class LauncherApp(ctk.CTk):
             vars_map[key] = var
             ctk.CTkEntry(row, textvariable=var, width=100).pack(side="left")
 
-        status_lbl = ctk.CTkLabel(win, text="", text_color="gray60")
+        status_lbl = ctk.CTkLabel(win, text="", text_color=T.c("text_faint"))
         status_lbl.pack(pady=(4, 0))
 
         def save():
             try:
                 new_weights = {k: float(v.get()) for k, v in vars_map.items()}
             except ValueError:
-                status_lbl.configure(text="All weights must be numbers.", text_color="#e05a5a")
+                status_lbl.configure(text="All weights must be numbers.", text_color=T.col("danger"))
                 return
             try:
                 with open(config_path, "w") as f:
                     json.dump(new_weights, f, indent=2)
-                status_lbl.configure(text=f"Saved to {config_path.name}", text_color="#5ac47a")
+                status_lbl.configure(text=f"Saved to {config_path.name}", text_color=T.col("ok"))
             except OSError as e:
-                status_lbl.configure(text=f"Failed to save: {e}", text_color="#e05a5a")
+                status_lbl.configure(text=f"Failed to save: {e}", text_color=T.col("danger"))
 
         def reset_defaults():
             for key, var in vars_map.items():
@@ -757,13 +766,13 @@ class LauncherApp(ctk.CTk):
         win.transient(self)
 
         ctk.CTkLabel(win, text="Which environment should run training?",
-                     font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", padx=20, pady=(16, 2))
+                     font=T.f(17, "bold")).pack(anchor="w", padx=20, pady=(16, 2))
         ctk.CTkLabel(win, text="Conda environments, virtualenvs and system Pythons are listed. "
                                "The training libraries must be installed in the one you pick.",
-                     text_color="gray60", font=ctk.CTkFont(size=11), justify="left").pack(
+                     text_color=T.c("text_faint"), font=T.f(11), justify="left").pack(
             anchor="w", padx=20, pady=(0, 10))
 
-        status = ctk.CTkLabel(win, text="Scanning for Python environments…", text_color="gray70")
+        status = ctk.CTkLabel(win, text="Scanning for Python environments…", text_color=T.c("text_dim"))
         status.pack(anchor="w", padx=20)
 
         listbox = ctk.CTkScrollableFrame(win, fg_color="transparent", height=340)
@@ -787,7 +796,7 @@ class LauncherApp(ctk.CTk):
                                    value=label).pack(anchor="w", padx=8, pady=5)
             if not found:
                 ctk.CTkLabel(listbox, text="No environments found. Use 'Browse python.exe…' below.",
-                             text_color="gray60").pack(anchor="w", padx=8, pady=8)
+                             text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=8)
             status.configure(text=f"{len(found)} environment(s) found.")
             if labels:
                 current = self.python_var.get().strip()
@@ -878,21 +887,21 @@ class LauncherApp(ctk.CTk):
         win.transient(self)
 
         ctk.CTkLabel(win, text="Install training packages",
-                     font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", padx=20, pady=(16, 4))
-        ctk.CTkLabel(win, text=env_utils.describe(info), text_color="gray70",
-                     font=ctk.CTkFont(size=11), justify="left", wraplength=630).pack(
+                     font=T.f(17, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+        ctk.CTkLabel(win, text=env_utils.describe(info), text_color=T.c("text_dim"),
+                     font=T.f(11), justify="left", wraplength=630).pack(
             anchor="w", padx=20, pady=(0, 10))
         ctk.CTkLabel(win, text=("Already installed: " + ", ".join(sorted(set(env_utils.REQUIRED_PACKAGES) - set(missing)))
                                 if missing else "Everything is already installed."),
-                     text_color="gray60", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20)
+                     text_color=T.c("text_faint"), font=T.f(11)).pack(anchor="w", padx=20)
         if missing:
-            ctk.CTkLabel(win, text="Missing: " + ", ".join(missing), text_color="#e0a15a",
-                         font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20, pady=(2, 8))
+            ctk.CTkLabel(win, text="Missing: " + ", ".join(missing), text_color=T.col("warn"),
+                         font=T.f(11)).pack(anchor="w", padx=20, pady=(2, 8))
 
         cpu_only = tk.BooleanVar(value=False)
-        box = ctk.CTkFrame(win, corner_radius=12, border_width=1, border_color="gray25")
+        box = ctk.CTkFrame(win, corner_radius=12, border_width=1, border_color=T.c("border"))
         box.pack(fill="x", padx=20, pady=(12, 8))
-        ctk.CTkLabel(box, text="PyTorch build", font=ctk.CTkFont(size=13, weight="bold")).pack(
+        ctk.CTkLabel(box, text="PyTorch build", font=T.f(13, "bold")).pack(
             anchor="w", padx=14, pady=(10, 4))
         ctk.CTkRadioButton(box, text="CUDA 12.4 — NVIDIA GPU (big download, recommended if you have one)",
                            variable=cpu_only, value=False).pack(anchor="w", padx=14, pady=3)
@@ -901,7 +910,7 @@ class LauncherApp(ctk.CTk):
 
         ctk.CTkLabel(win, text="Runs in a new console window: torch, upstream requirements "
                                "(req-win.txt), then requirements-launcher.txt.",
-                     text_color="gray60", font=ctk.CTkFont(size=11), justify="left",
+                     text_color=T.c("text_faint"), font=T.f(11), justify="left",
                      wraplength=630).pack(anchor="w", padx=20)
 
         def start():
@@ -956,7 +965,7 @@ class LauncherApp(ctk.CTk):
 
         if not checkpoints:
             ctk.CTkLabel(self.ckpt_scroll, text=f"(no checkpoints found in {runs_dir})",
-                         text_color="gray60").pack(anchor="w", padx=8, pady=4)
+                         text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=4)
         for steps, path in checkpoints:
             label = f"{steps:,} steps  —  {path.parent.name}/{path.name}"
             if path.name == "poke_26214400.zip":
@@ -1005,7 +1014,7 @@ class LauncherApp(ctk.CTk):
         if not ordered_ids:
             ctk.CTkLabel(self.curr_scroll,
                          text=f"(no curriculum snapshots found in {curriculum_dir})",
-                         text_color="gray60").pack(anchor="w", padx=8, pady=4)
+                         text_color=T.c("text_faint")).pack(anchor="w", padx=8, pady=4)
         for qid in ordered_ids:
             entry = manifest[qid]
             label = f"After: {entry.get('description', qid)}"
@@ -1132,6 +1141,9 @@ class LauncherApp(ctk.CTk):
         self.root_pid = self.proc.pid
         self.start_time = time.time()
         self.resolved_sess_path = None
+        # Training saturates the CPU with num_cpu environments: from here until
+        # it exits, the UI stops animating entirely (see anim.Motion).
+        A.set_performance(True)
         self.save_settings()
 
         try:
@@ -1153,17 +1165,17 @@ class LauncherApp(ctk.CTk):
         f = ctk.CTkFrame(self, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=24, pady=20)
         self.grid_frame = f
-        self.timer_label = ctk.CTkLabel(f, text="00:00:00", font=ctk.CTkFont(size=28, weight="bold"))
+        self.timer_label = ctk.CTkLabel(f, text="00:00:00", font=T.f(28, "bold"))
         self.timer_label.pack(pady=(10, 0))
         ctk.CTkLabel(f, text="Training running headless (no windows to display).",
-                     font=ctk.CTkFont(size=16)).pack(pady=(4, 20))
+                     font=T.f(16)).pack(pady=(4, 20))
 
         self.status_label_live = ctk.CTkLabel(f, text="steps: -- | mean reward: --",
-                                               font=ctk.CTkFont(size=13))
+                                               font=T.f(13))
         self.status_label_live.pack(pady=(0, 6))
 
-        self.components_label = ctk.CTkLabel(f, text="", text_color="gray60",
-                                              font=ctk.CTkFont(size=11), justify="left")
+        self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
+                                              font=T.f(11), justify="left")
         self.components_label.pack(pady=(0, 10))
 
         graph_holder = ctk.CTkFrame(f, fg_color="transparent")
@@ -1191,7 +1203,7 @@ class LauncherApp(ctk.CTk):
         toolbar = ctk.CTkFrame(f, fg_color="transparent")
         toolbar.pack(fill="x", padx=12, pady=10)
 
-        self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=ctk.CTkFont(size=20, weight="bold"))
+        self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=T.f(20, "bold"))
         self.timer_label.pack(side="left", padx=(0, 16))
 
         self.grid_status_label = ctk.CTkLabel(toolbar, text="Waiting for game windows to appear...")
@@ -1206,19 +1218,19 @@ class LauncherApp(ctk.CTk):
         stats_row = ctk.CTkFrame(f, fg_color="transparent")
         stats_row.pack(fill="x", padx=12, pady=(0, 4))
         self.status_label_live = ctk.CTkLabel(stats_row, text="steps: -- | mean reward: --",
-                                               font=ctk.CTkFont(size=13))
+                                               font=T.f(13))
         self.status_label_live.pack(side="left")
 
         self._build_mini_graph(stats_row)
 
-        self.components_label = ctk.CTkLabel(f, text="", text_color="gray60",
-                                              font=ctk.CTkFont(size=11), justify="left")
+        self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
+                                              font=T.f(11), justify="left")
         self.components_label.pack(anchor="w", padx=12, pady=(0, 8))
 
         self.poll_training_status()
 
         # Plain tk.Frame (not CTkFrame) for the embed target -- keeps a real, simple HWND to reparent into.
-        self.game_area = tk.Frame(f, bg="black", highlightthickness=0, bd=0)
+        self.game_area = tk.Frame(f, bg=T.col("grid_bg"), highlightthickness=0, bd=0)
         self.game_area.pack(fill="both", expand=True, padx=12, pady=(0, 12))
         self.game_area.bind("<Configure>", lambda e: self.retile_now())
 
@@ -1240,12 +1252,12 @@ class LauncherApp(ctk.CTk):
 
     def _build_mini_graph(self, parent):
         fig = Figure(figsize=(4.2, 1.1), dpi=100)
-        fig.patch.set_facecolor("#2b2b2b")
+        fig.patch.set_facecolor(T.col("chart_bg"))
         ax = fig.add_subplot(111)
-        ax.set_facecolor("#2b2b2b")
-        ax.tick_params(colors="gray", labelsize=7)
+        ax.set_facecolor(T.col("chart_bg"))
+        ax.tick_params(colors=T.col("chart_axis"), labelsize=T.SIZES["chart_tick"])
         for spine in ax.spines.values():
-            spine.set_color("#555")
+            spine.set_color(T.col("chart_grid"))
         fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.2)
 
         canvas = FigureCanvasTkAgg(fig, master=parent)
@@ -1293,18 +1305,21 @@ class LauncherApp(ctk.CTk):
 
         if self.proc.poll() is None:
             self.after(2000, self.poll_training_status)
+        else:
+            A.set_performance(False)  # run over: the UI may animate again
 
     def _redraw_graph(self):
         if self.graph_ax is None or len(self.reward_history) < 2:
             return
         self.graph_ax.clear()
-        self.graph_ax.set_facecolor("#2b2b2b")
-        self.graph_ax.tick_params(colors="gray", labelsize=7)
+        self.graph_ax.set_facecolor(T.col("chart_bg"))
+        self.graph_ax.tick_params(colors=T.col("chart_axis"), labelsize=T.SIZES["chart_tick"])
         for spine in self.graph_ax.spines.values():
-            spine.set_color("#555")
+            spine.set_color(T.col("chart_grid"))
         ys = list(self.reward_history)
-        self.graph_ax.plot(ys, color="#3b8ed0", linewidth=1.5)
-        self.graph_ax.set_title("mean reward", color="gray", fontsize=8, loc="left")
+        self.graph_ax.plot(ys, color=T.col("chart_line"), linewidth=1.5)
+        self.graph_ax.set_title("mean reward", color=T.col("chart_axis"),
+                                fontsize=T.SIZES["chart_title"], loc="left")
         try:
             self.graph_canvas.draw_idle()
         except Exception:
@@ -1403,6 +1418,7 @@ class LauncherApp(ctk.CTk):
 
     def on_close(self):
         self.save_settings()
+        A.set_performance(False)
         if self.proc is not None and self.proc.poll() is None:
             if not messagebox.askyesno(
                 "Stop training?",

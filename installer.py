@@ -41,7 +41,7 @@ APP_NAME = "Pokémon RL Launcher"
 APP_VERSION = "1.0.0"
 
 # ---- edit these two lines before you build the installer -------------------
-OVERLAY_REPO = "KanishkPatel0206/pokemon-rl-launcher"   # repo holding the overlay/ folder
+OVERLAY_REPO = "akeshi02/pokemon-rl-launcher"   # repo holding the overlay/ folder
 OVERLAY_REF = "main"
 # -----------------------------------------------------------------------------
 UPSTREAM_REPO = "PWhiddy/PokemonRedExperiments"

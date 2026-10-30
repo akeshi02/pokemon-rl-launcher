@@ -48,7 +48,7 @@ Pokémon Red ROM** (this project ships no ROM and links to none).
 ### Plain Python
 
 ```bash
-git clone https://github.com/KanishkPatel0206/pokemon-rl-launcher.git
+git clone https://github.com/akeshi02/pokemon-rl-launcher.git
 cd pokemon-rl-launcher
 python setup_overlay.py            # downloads upstream, copies the overlay into its v2/ folder
 cd PokemonRedExperiments/v2
@@ -131,7 +131,7 @@ Building needs Python 3.10–3.12 with `pyinstaller` (any conda/venv environment
 has it installed works — no special environment name is required).
 
 ```bat
-:: OVERLAY_REPO in installer.py is already set to KanishkPatel0206/pokemon-rl-launcher;
+:: OVERLAY_REPO in installer.py is already set to akeshi02/pokemon-rl-launcher;
 :: change it if you forked the project. Then, from the repo root:
 build_all.bat
 ```
@@ -170,7 +170,7 @@ soon as its window opens (used for automated smoke tests).
 GitHub Release whenever you push a `v*` tag.
 
 ```bash
-git remote add origin https://github.com/KanishkPatel0206/pokemon-rl-launcher.git   # or your fork's URL
+git remote add origin https://github.com/akeshi02/pokemon-rl-launcher.git   # or your fork's URL
 git push -u origin main
 
 git tag v1.0.0
@@ -208,6 +208,9 @@ plus an activated-like `PATH`, so `conda activate` is not required.
 ## Notes
 - Public-map streaming (upstream's `StreamWrapper`) is **off** unless you pass `--stream`.
 - No ROM, save states, or training output are included in this repo.
+- This repository is an independent **copy** (not a fork) of
+  <https://github.com/KanishkPatel0206/pokemon-rl-launcher>, so `OVERLAY_REPO` in
+  `installer.py` points at `akeshi02/pokemon-rl-launcher`.
 
 ## Credits
 

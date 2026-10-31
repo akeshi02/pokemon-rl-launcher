@@ -117,6 +117,16 @@ def build(root, widgets: int, motion):
     toasts.show("Third: unread incoming message", kind="warn", timeout=0)
 
     A.breathe(header, period=1400, motion=motion)
+    # The "running" indicator ships *static* while a run is active (the <2 % CPU
+    # gate forbids a per-frame colour pulse during perf mode), so model it that
+    # way: it pulses only in the animated demo, exactly like the real launcher.
+    run_dot = ctk.CTkLabel(holder, text="●", font=T.f("body_bold"),
+                           text_color=T.c("accent"))
+    run_dot.pack()
+    A.breathe(run_dot, motion=motion)
+    # A busy progress bar: animates when motion is on, parks itself when off.
+    progress = A.Progress(holder, motion=motion, width=200, height=6)
+    progress.pack(pady=(6, 0))
     return state, animate_cards, tick, spark_loop, poll, timer_loop
 
 

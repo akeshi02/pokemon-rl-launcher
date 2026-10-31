@@ -19,9 +19,10 @@ import theme as T
 
 __all__ = [
     "EASINGS", "lerp", "lerp_color", "parse_color",
-    "Motion", "MOTION", "set_performance", "set_reduce_motion",
-    "reduce_motion_from_os",
+    "Motion", "MOTION", "MOTION_SPEC", "spec", "set_performance",
+    "set_reduce_motion", "reduce_motion_from_os",
     "Animator", "TweenNumber", "Toasts", "Toast", "Sequence", "breathe",
+    "Progress",
 ]
 
 # ---------------------------------------------------------------------------
@@ -48,6 +49,11 @@ def ease_in_out_quad(t: float) -> float:
     return 2 * t * t if t < 0.5 else 1.0 - (-2 * t + 2) ** 2 / 2.0
 
 
+def ease_in_out_sine(t: float) -> float:
+    """Half-cosine ease -- the 'sine' row of the motion spec (§3)."""
+    return -(math.cos(math.pi * t) - 1.0) / 2.0
+
+
 def ease_out_back(t: float) -> float:
     c1, c3 = 1.70158, 2.70158
     return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2
@@ -66,9 +72,36 @@ EASINGS = {
     "easeOutCubic": ease_out_cubic,
     "easeInCubic": ease_in_cubic,
     "easeInOutQuad": ease_in_out_quad,
+    "sine": ease_in_out_sine,
     "easeOutBack": ease_out_back,
     "spring": spring,
 }
+
+
+# The motion spec from the roadmap (§3) lives here so no duration or easing is
+# ever invented at a call site -- a new animation needs a row in this table.
+# Durations are milliseconds.
+MOTION_SPEC = {
+    "page":         {"ms": 220, "easing": "easeOutCubic"},    # select -> grid
+    "page_slide":   12,                                       # px of the above
+    "dialog_open":  {"ms": 140, "easing": "easeOutQuad"},
+    "dialog_close": {"ms": 110, "easing": "easeOutQuad"},
+    "toast_in":     {"ms": 180, "easing": "easeOutCubic"},
+    "toast_out":    {"ms": 140, "easing": "easeOutCubic"},
+    "button":       {"ms": 90,  "easing": "linear"},
+    "number":       {"ms": 300, "easing": "easeOutCubic"},
+    "sparkline":    {"ms": 120, "easing": "easeInOutQuad"},
+    "component":    {"ms": 200, "easing": "easeOutCubic"},
+    "tile_border":  {"ms": 90,  "easing": "linear"},
+    "running_dot":  {"ms": 1400, "easing": "sine"},
+    "retile":       {"ms": 120, "easing": "linear"},
+    "progress":     {"ms": 900, "easing": "linear"},          # one 0->1 sweep
+}
+
+
+def spec(name: str) -> dict:
+    """Look up a row of :data:`MOTION_SPEC` (raises ``KeyError`` if unknown)."""
+    return MOTION_SPEC[name]
 
 
 def lerp(a, b, t: float):
@@ -380,8 +413,8 @@ class Animator:
 class TweenNumber:
     """Counts a displayed number up/down instead of snapping."""
 
-    def __init__(self, widget, duration=300, decimals=0, motion=None,
-                 easing="easeOutCubic", fps=None, prefix="", suffix="",
+    def __init__(self, widget, duration=MOTION_SPEC["number"]["ms"], decimals=0, motion=None,
+                 easing=MOTION_SPEC["number"]["easing"], fps=None, prefix="", suffix="",
                  thousands=True):
         self.widget = widget
         self.duration = duration
@@ -467,12 +500,18 @@ class Toasts:
                      wraplength=self.WIDTH - 60).pack(anchor="w")
 
         item = {"frame": frame, "animator": Animator(frame, self.motion, self.fps), "shown": False}
+        # Marks the widget so ``LauncherApp._clear_root_children`` leaves toasts
+        # alone when it wipes a screen (they belong to the window, not a screen).
+        try:
+            frame._poke_toast = True
+        except Exception:
+            pass
         self._items.append(item)
         self._relayout()
 
         if self.motion.enabled:
             item["animator"].tween(lambda x: self._place(item, x), self.WIDTH, -self.MARGIN,
-                                   duration=180, easing="easeOutCubic",
+                                   duration=spec("toast_in")["ms"], easing=spec("toast_in")["easing"],
                                    tag=f"toast-in:{id(item)}",
                                    on_done=lambda: item.update(shown=True))
         else:
@@ -497,8 +536,14 @@ class Toasts:
             self._remove(item)
 
         item["animator"].tween(lambda x: self._place(item, x), -self.MARGIN, self.WIDTH,
-                               duration=140, easing="easeOutCubic",
+                               duration=spec("toast_out")["ms"], easing=spec("toast_out")["easing"],
                                tag=f"toast-out:{id(item)}", on_done=done)
+
+    def reflow(self) -> None:
+        """Re-place every toast so it sits above a freshly built screen."""
+        for item in self._items:
+            self._place(item, item.get("x", -self.MARGIN))
+        self._relayout()
 
     def clear(self) -> None:
         for item in list(self._items):
@@ -595,17 +640,25 @@ class Sequence:
             self._job = None
 
 
-def breathe(widget, attr: str = "text_color", period: int = 1400,
-            color_from=None, color_to=None, motion: Motion | None = None, fps: int = 20):
+def breathe(widget, attr: str = "text_color", period: int | None = None,
+            color_from=None, color_to=None, motion: Motion | None = None, fps: int = 20,
+            always: bool = False):
     """Loop a subtle colour pulse (e.g. the 'running' dot).  Returns a stopper.
 
-    With motion disabled it applies ``color_to`` once and does nothing else, so
-    performance mode costs exactly zero frames.
+    With motion disabled this normally applies ``color_to`` once and schedules
+    nothing -- performance mode costs exactly zero frames.  ``always=True`` is
+    for the one animation the roadmap allows *during* a run: the "running"
+    indicator, a single cheap pulse.  Reduce-motion still wins over ``always``.
     """
     motion = motion or MOTION
+    if period is None:
+        period = spec("running_dot")["ms"]
     color_from = color_from or T.col("text_faint")
     color_to = color_to or T.col("accent")
     animator = Animator(widget, motion, fps)
+    # "always" pulses even in performance mode (a run is active); reduce-motion
+    # is the accessibility veto and always stops it.
+    pulse_on = motion.enabled or (always and not motion.reduce_motion)
     alive = {"on": True}
     held = {"on": False}
     t0 = time.perf_counter()
@@ -626,13 +679,13 @@ def breathe(widget, attr: str = "text_color", period: int = 1400,
         except Exception:
             _finish()
             return
-        if motion.enabled:
+        if pulse_on:
             try:
                 widget.after(motion.frame_ms(fps), _pulse)
             except Exception:
                 _finish()
 
-    if motion.enabled:
+    if pulse_on:
         _acquire_timer()
         held["on"] = True
         _pulse()
@@ -648,3 +701,82 @@ def breathe(widget, attr: str = "text_color", period: int = 1400,
         animator.stop_all()
 
     return stop
+
+
+class Progress:
+    """A single, policy-aware indeterminate progress bar.
+
+    For "busy" states such as scanning environments or checking packages.  It is
+    exactly one widget and it parks itself the moment motion is off, so it can
+    never cost frames while a training run is active.
+    """
+
+    def __init__(self, parent, motion: Motion | None = None, period: int | None = None,
+                 idle: float = 0.35, width: int = 200, height: int = 6, fps: int = 30,
+                 **kwargs):
+        import customtkinter as ctk
+        self.motion = motion or MOTION
+        self.period = max(120, int(period or spec("progress")["ms"]))
+        self.idle = float(idle)
+        self._fps = fps
+        self._alive = True
+        self._held = False
+        self.bar = ctk.CTkProgressBar(
+            parent, width=width, height=height,
+            corner_radius=max(2, height // 2),
+            progress_color=T.c("accent"), fg_color=T.c("card"), **kwargs)
+        self.bar.set(self.idle)
+        if self.motion.enabled:
+            self._hold()
+            self._t0 = time.perf_counter()
+            self._tick()
+
+    # -- internals ----------------------------------------------------------
+    def _hold(self) -> None:
+        if not self._held:
+            self._held = True
+            _acquire_timer()
+
+    def _release(self) -> None:
+        if self._held:
+            self._held = False
+            _release_timer()
+
+    def _tick(self) -> None:
+        if not self._alive or not self.motion.enabled:
+            self._release()
+            return
+        phase = ((time.perf_counter() - self._t0) / (self.period / 1000.0)) % 1.0
+        try:
+            self.bar.set(phase)
+        except Exception:
+            self._release()
+            return
+        try:
+            self.bar.after(self.motion.frame_ms(self._fps), self._tick)
+        except Exception:
+            self._release()
+
+    # -- layout / lifecycle -------------------------------------------------
+    def pack(self, **kwargs):
+        self.bar.pack(**kwargs)
+        return self
+
+    def grid(self, **kwargs):
+        self.bar.grid(**kwargs)
+        return self
+
+    def place(self, **kwargs):
+        self.bar.place(**kwargs)
+        return self
+
+    def stop(self) -> None:
+        self._alive = False
+        self._release()
+
+    def destroy(self) -> None:
+        self.stop()
+        try:
+            self.bar.destroy()
+        except Exception:
+            pass

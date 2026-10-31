@@ -338,6 +338,13 @@ class LauncherApp(ctk.CTk):
         self._train_log = None
         self.train_log_path = None
 
+        # M2 motion state: a toast layer that survives screen rebuilds, the
+        # displayed (tweened) step/reward values, and the running-dot stopper.
+        self.toasts = A.Toasts(self)
+        self._stats_disp = {"steps": 0.0, "reward": 0.0}
+        self._running_dot_stop = None
+        self._env_progress = None
+
         self.cfg = load_launcher_config()
 
         # Appearance + accent (M1).  Precedence: env var (the screenshot/test
@@ -351,6 +358,13 @@ class LauncherApp(ctk.CTk):
         if self.accent not in T.ACCENTS:
             self.accent = "blue"
         T.apply(appearance=self.appearance, accent=self.accent)
+
+        # Reduce motion (M2): an in-app switch wins over the OS accessibility
+        # setting.  anim.MOTION then collapses every animation duration to zero
+        # (the state change still applies; only the presentation is skipped).
+        rm = self.cfg.get("reduce_motion")
+        A.set_reduce_motion(bool(rm) if rm is not None else A.reduce_motion_from_os())
+        self.reduce_motion_var = tk.BooleanVar(value=bool(A.MOTION.reduce_motion))
 
         default_workdir = str(self.cfg.get("workdir") or "")
         if not default_workdir or not Path(default_workdir).is_dir():
@@ -401,8 +415,27 @@ class LauncherApp(ctk.CTk):
         guarantees a clean slate before building the next screen.
         """
         for child in list(self.winfo_children()):
+            # Toasts belong to the window, not to a screen -- leave them up and
+            # let the next screen build raise them again.
+            if getattr(child, "_poke_toast", False):
+                continue
             child.destroy()
         self.update_idletasks()
+        # The running-dot stopper and any busy progress bar belong to the screen
+        # we just tore down; stop them explicitly rather than waiting for their
+        # widgets to vanish underneath them.
+        if self._running_dot_stop is not None:
+            try:
+                self._running_dot_stop()
+            except Exception:
+                pass
+            self._running_dot_stop = None
+        if self._env_progress is not None:
+            try:
+                self._env_progress.destroy()
+            except Exception:
+                pass
+            self._env_progress = None
 
     # ------------------------------------------------------------------
     # Themed chrome helpers (M1: one place defines what a card/header/dialog
@@ -456,6 +489,20 @@ class LauncherApp(ctk.CTk):
         self.accent_menu.set(T.accent_label(self.accent))
         self.accent_menu.pack(side="left", padx=(T.SPACE["sm"], 0))
 
+        # Reduce motion (M2): an in-app override of the OS accessibility
+        # setting.  Persisted immediately, like the appearance/accent choices.
+        self.reduce_motion_switch = ctk.CTkSwitch(
+            block, text="Reduce motion", font=T.f("small"),
+            variable=self.reduce_motion_var, command=self._on_reduce_motion,
+            progress_color=T.c("accent"), button_color=T.c("accent_hover"),
+            text_color=T.c("text_dim"))
+        self.reduce_motion_switch.pack(anchor="e", pady=(T.SPACE["sm"], 0))
+
+    def _on_reduce_motion(self):
+        """Honour (or stop honouring) the accessibility motion switch."""
+        A.set_reduce_motion(bool(self.reduce_motion_var.get()))
+        save_launcher_config({"reduce_motion": bool(self.reduce_motion_var.get())})
+
     def _appearance_label(self) -> str:
         return {"light": "Light", "dark": "Dark", "system": "System"}.get(
             self.appearance, "Dark")
@@ -494,7 +541,81 @@ class LauncherApp(ctk.CTk):
         y = max(0, (sh - px_h) // 3)
         win.geometry(f"{cw}x{ch}+{x}+{y}")
         win.bind("<Escape>", lambda _e: win.destroy())
+        self._dialog_intro(win, cw, ch, x, y, px_w, px_h)
         return win
+
+    def _dialog_intro(self, win, cw, ch, x, y, px_w, px_h):
+        """Scale the dialog 0.96 -> 1.0 (motion spec §3), staying centred.
+
+        Sizes are requested in customtkinter's logical units (it multiplies them
+        by the window scaling); ``+x+y`` is physical, so the centring maths works
+        in physical pixels.  A no-op under reduce-motion or while a run is active.
+        """
+        if not A.MOTION.enabled:
+            return
+        row = A.spec("dialog_open")
+
+        def apply(f):
+            w, h = max(1, int(cw * f)), max(1, int(ch * f))
+            ox = x + (px_w - int(px_w * f)) // 2
+            oy = y + (px_h - int(px_h * f)) // 2
+            try:
+                win.geometry(f"{w}x{h}+{ox}+{oy}")
+            except Exception:
+                pass  # dialog closed mid-animation
+
+        A.Animator(win).tween(apply, 0.96, 1.0, duration=row["ms"],
+                              easing=row["easing"], tag="dialog-intro")
+
+    def _enter_screen(self, frame):
+        """A 12 px slide-in for a freshly built screen (motion spec §3).
+
+        Only the container's pack padding is animated -- one widget, and it is a
+        no-op while a run is active or under reduce-motion, so it can never cost
+        the emulator a frame.  The tween's first step runs immediately, so the
+        screen is already offset before its children are added.
+        """
+        if self.toasts is not None:
+            self.toasts.reflow()
+        if not A.MOTION.enabled:
+            return
+        try:
+            base = frame.pack_info().get("pady", 0)
+        except Exception:
+            return
+        if isinstance(base, str):
+            try:
+                base = int(base) if base.strip() else 0
+            except ValueError:
+                return
+        if not isinstance(base, int):
+            return  # tuple padding: skip rather than guess
+        row = A.spec("page")
+
+        def apply(v):
+            try:
+                frame.pack_configure(pady=int(round(v)))
+            except Exception:
+                pass  # screen torn down mid-slide
+
+        A.Animator(frame).tween(apply, base + int(A.MOTION_SPEC["page_slide"]), base,
+                                duration=row["ms"], easing=row["easing"],
+                                tag="page-enter")
+
+    def _running_dot(self, parent, **pack):
+        """A solid "running" dot on the training screens.
+
+        It is deliberately **static while a run is active**: the roadmap's < 2 %
+        CPU budget is a hard gate, and reconfiguring a CTk widget's colour every
+        frame to breathe it cannot fit under it (measured 2.2-4.1 % vs 0.64 %
+        static).  ``breathe`` still applies the accent colour, so the dot looks
+        identical; it would only pulse on a screen shown with motion enabled.
+        """
+        dot = ctk.CTkLabel(parent, text="●", font=T.f("body_bold"),
+                           text_color=T.c("accent"), width=12)
+        dot.pack(**pack)
+        self._running_dot_stop = A.breathe(dot, period=A.MOTION_SPEC["running_dot"]["ms"])
+        return dot
 
     def build_select_frame(self):
         self._clear_root_children()
@@ -510,6 +631,7 @@ class LauncherApp(ctk.CTk):
         )
         f.pack(fill="both", expand=True, padx=T.SPACE["xl"], pady=T.SPACE["lg"])
         self.select_frame = f
+        self._enter_screen(f)
 
         header = ctk.CTkFrame(f, fg_color="transparent")
         header.pack(fill="x")
@@ -905,6 +1027,8 @@ class LauncherApp(ctk.CTk):
 
         status = ctk.CTkLabel(win, text="Scanning for Python environments…", text_color=T.c("text_dim"))
         status.pack(anchor="w", padx=T.SPACE["lg"])
+        self._env_progress = A.Progress(win, width=320, height=6)
+        self._env_progress.pack(anchor="w", padx=T.SPACE["lg"], pady=(T.SPACE["xs"], 0))
 
         listbox = ctk.CTkScrollableFrame(win, fg_color="transparent", height=340)
         listbox.pack(fill="both", expand=True, padx=T.SPACE["md"], pady=T.SPACE["sm"])
@@ -936,6 +1060,9 @@ class LauncherApp(ctk.CTk):
                 ctk.CTkLabel(listbox, text="No environments found. Use 'Browse python.exe…' below.",
                              text_color=T.c("text_faint")).pack(anchor="w", padx=T.SPACE["sm"], pady=T.SPACE["sm"])
             status.configure(text=f"{len(found)} environment(s) found.")
+            if self._env_progress is not None:
+                self._env_progress.destroy()
+                self._env_progress = None
             if labels:
                 current = self.python_var.get().strip()
                 pick = next((l for l, e in envs.items()
@@ -1295,6 +1422,8 @@ class LauncherApp(ctk.CTk):
         else:
             self.build_grid_frame(num_cpu, cols)
             threading.Thread(target=self.watch_for_windows, args=(num_cpu, cols), daemon=True).start()
+        self.toasts.show(f"Training started (num_cpu={num_cpu}).",
+                         kind="ok", title="Training", timeout=3500)
 
     # ------------------------------------------------------------------
     def build_headless_status_frame(self):
@@ -1303,10 +1432,14 @@ class LauncherApp(ctk.CTk):
         f = ctk.CTkFrame(self, fg_color="transparent")
         f.pack(fill="both", expand=True, padx=T.SPACE["xl"], pady=T.SPACE["lg"])
         self.grid_frame = f
+        self._enter_screen(f)
         self.timer_label = ctk.CTkLabel(f, text="00:00:00", font=T.f("timer", "bold"))
         self.timer_label.pack(pady=(T.SPACE["sm"], 0))
-        ctk.CTkLabel(f, text="Training running headless (no windows to display).",
-                     font=T.f("h4")).pack(pady=(T.SPACE["xs"], T.SPACE["lg"]))
+        head_row = ctk.CTkFrame(f, fg_color="transparent")
+        head_row.pack(pady=(T.SPACE["xs"], T.SPACE["lg"]))
+        self._running_dot(head_row, side="left", padx=(0, T.SPACE["sm"]))
+        ctk.CTkLabel(head_row, text="Training running headless (no windows to display).",
+                     font=T.f("h4")).pack(side="left")
 
         self.status_label_live = ctk.CTkLabel(f, text="steps: -- | mean reward: --",
                                                font=T.f("body"))
@@ -1337,10 +1470,12 @@ class LauncherApp(ctk.CTk):
         f = ctk.CTkFrame(self, fg_color="transparent")
         f.pack(fill="both", expand=True)
         self.grid_frame = f
+        self._enter_screen(f)
 
         toolbar = ctk.CTkFrame(f, fg_color="transparent")
         toolbar.pack(fill="x", padx=T.SPACE["md"], pady=T.SPACE["sm"])
 
+        self._running_dot(toolbar, side="left", padx=(0, T.SPACE["sm"]))
         self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=T.f("timer_grid", "bold"))
         self.timer_label.pack(side="left", padx=(0, T.SPACE["lg"]))
 
@@ -1350,7 +1485,8 @@ class LauncherApp(ctk.CTk):
         ctk.CTkButton(toolbar, text="Open TensorBoard", width=130, command=self.launch_tensorboard).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Runs Folder", width=100, command=self.open_runs_folder).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Log", width=80, command=self.open_train_log).pack(side="right", padx=T.SPACE["sm"])
-        ctk.CTkButton(toolbar, text="Re-tile now", width=100, command=self.retile_now).pack(side="right", padx=T.SPACE["sm"])
+        ctk.CTkButton(toolbar, text="Re-tile now", width=100,
+                      command=lambda: self.retile_now(notify=True)).pack(side="right", padx=T.SPACE["sm"])
         self.update_timer()
 
         stats_row = ctk.CTkFrame(f, fg_color="transparent")
@@ -1429,8 +1565,7 @@ class LauncherApp(ctk.CTk):
                     data = json.load(fjson)
                 steps = data.get("steps", 0)
                 mean_reward = data.get("mean_reward", 0.0)
-                self.status_label_live.configure(
-                    text=f"steps: {steps:,} | mean reward: {mean_reward:.2f}")
+                self._set_stats(steps, mean_reward)
                 self.reward_history.append(mean_reward)
                 self._redraw_graph()
 
@@ -1445,6 +1580,50 @@ class LauncherApp(ctk.CTk):
             self.after(2000, self.poll_training_status)
         else:
             A.set_performance(False)  # run over: the UI may animate again
+            self.toasts.show(f"Training finished after {self._elapsed_text()}.",
+                             kind="ok", title="Run finished", timeout=6000)
+
+    def _elapsed_text(self) -> str:
+        if not self.start_time:
+            return "an unknown time"
+        secs = max(0, int(time.time() - self.start_time))
+        hrs, rem = divmod(secs, 3600)
+        mins, sec = divmod(rem, 60)
+        return f"{hrs:d}h {mins:02d}m" if hrs else f"{mins:d}m {sec:02d}s"
+
+    def _set_stats(self, steps, mean_reward):
+        """Count the step/reward readout up instead of snapping.
+
+        While a run is active (performance mode) or under reduce-motion this
+        renders immediately -- the numbers change, the animation is skipped.
+        """
+        self._stats = {"steps": float(steps), "reward": float(mean_reward)}
+        if self.status_label_live is None:
+            return
+        if not A.MOTION.enabled:
+            self._stats_disp = dict(self._stats)
+            self._render_stats()
+            return
+        row = A.spec("number")
+        animator = A.Animator(self.status_label_live)
+        animator.tween(lambda v: self._tick_stats("steps", v),
+                       self._stats_disp["steps"], self._stats["steps"],
+                       duration=row["ms"], easing=row["easing"], tag="stats-steps")
+        animator.tween(lambda v: self._tick_stats("reward", v),
+                       self._stats_disp["reward"], self._stats["reward"],
+                       duration=row["ms"], easing=row["easing"], tag="stats-reward")
+
+    def _tick_stats(self, key, value):
+        self._stats_disp[key] = value
+        self._render_stats()
+
+    def _render_stats(self):
+        try:
+            self.status_label_live.configure(
+                text=f"steps: {int(round(self._stats_disp['steps'])):,} "
+                     f"| mean reward: {self._stats_disp['reward']:.2f}")
+        except Exception:
+            pass
 
     def _redraw_graph(self):
         if self.graph_ax is None or len(self.reward_history) < 2:
@@ -1463,7 +1642,7 @@ class LauncherApp(ctk.CTk):
         except Exception:
             pass
 
-    def retile_now(self):
+    def retile_now(self, notify=False):
         if not self.embedded_hwnds:
             return
         self.game_area.update_idletasks()
@@ -1478,6 +1657,9 @@ class LauncherApp(ctk.CTk):
                                        win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
             except Exception as e:
                 print(f"Warning: couldn't reposition window {hwnd}: {e}")
+        if notify:
+            self.toasts.show(f"Re-tiled {len(self.embedded_hwnds)} tile(s).",
+                             kind="info", timeout=2500)
 
     def watch_for_windows(self, num_cpu, cols, timeout=90.0):
         start = time.time()
@@ -1520,6 +1702,8 @@ class LauncherApp(ctk.CTk):
 
         self.grid_status_label.configure(text=f"{len(self.embedded_hwnds)} game window(s) embedded.")
         self.retile_now()
+        self.toasts.show(f"{len(self.embedded_hwnds)} game window(s) embedded.",
+                         kind="ok", timeout=3000)
 
     # ------------------------------------------------------------------
     def save_settings(self):
@@ -1554,6 +1738,7 @@ class LauncherApp(ctk.CTk):
             "save_curriculum": bool(self.save_curriculum_var.get()),
             "appearance": self.appearance,
             "accent": self.accent,
+            "reduce_motion": bool(self.reduce_motion_var.get()),
         })
 
     def on_close(self):

@@ -90,11 +90,13 @@ def build(root, widgets: int, motion):
         root.after(max(1, motion.frame_ms() - int(work_ms)), tick)
 
     def spark_loop():
-        """Sparkline at the spec'd ~120 ms cadence, not per frame (animated only)."""
+        """Sparkline at the *real* update cadence (the 120 ms figure in the spec
+        is the morph duration, not how often a new point arrives).  A run writes
+        status every 2 s, so the morph runs then -- not eight times a second."""
         if state["stop"]:
             return
         spark.push(state["frames"] % 40 / 40.0)
-        root.after(120, spark_loop)
+        root.after(2000, spark_loop)
 
     def poll():
         if state["stop"]:

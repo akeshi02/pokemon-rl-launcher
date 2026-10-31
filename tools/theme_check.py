@@ -29,11 +29,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 V2 = ROOT / "overlay" / "v2"
 GUI = V2 / "pokemon_launcher_gui.py"
+DASHBOARD = V2 / "dashboard.py"
+
+# Every UI module whose literals must go through theme.py.
+SCANNED = (GUI, DASHBOARD)
 
 # (regex, why it is allowed) -- layout numbers that are not on a shared scale.
 ALLOWED_LITERALS = [
     (r"corner_radius=2\b", "half of a 4 px accent bar => fully rounded pill"),
+    (r"corner_radius=3\b", "half of a 6 px progress bar => fully rounded pill"),
     (r"padx=40\b", "one-off inset for the mini chart"),
+    (r"pady=1\b", "1 px gap between stacked reward-component rows"),
     (r"wraplength=\d+", "wraps relative to its dialog's width"),
 ]
 
@@ -67,16 +73,17 @@ ONE_DOT_OHO = {
 
 
 def check_literals() -> list[str]:
-    lines = GUI.read_text(encoding="utf-8").splitlines()
     problems = []
-    for pattern, label in LITERAL_PATTERNS:
-        rx = re.compile(pattern)
-        for i, line in enumerate(lines, 1):
-            if not rx.search(line):
-                continue
-            if any(re.search(allow, line) for allow, _ in ALLOWED_LITERALS):
-                continue
-            problems.append(f"{GUI.name}:{i}: {label}: {line.strip()[:80]}")
+    for path in SCANNED:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for pattern, label in LITERAL_PATTERNS:
+            rx = re.compile(pattern)
+            for i, line in enumerate(lines, 1):
+                if not rx.search(line):
+                    continue
+                if any(re.search(allow, line) for allow, _ in ALLOWED_LITERALS):
+                    continue
+                problems.append(f"{path.name}:{i}: {label}: {line.strip()[:80]}")
     return problems
 
 
@@ -144,9 +151,10 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
-    if not GUI.is_file():
-        print(f"launcher not found: {GUI}", file=sys.stderr)
-        return 2
+    for path in SCANNED:
+        if not path.is_file():
+            print(f"UI module not found: {path}", file=sys.stderr)
+            return 2
 
     literals = check_literals()
     tokens, token_count = check_tokens()
@@ -161,7 +169,7 @@ def main() -> int:
     print("=" * 66)
     print("Launcher theme check")
     print("=" * 66)
-    print(f"hardcoded literals in {GUI.name}: {len(literals)}")
+    print(f"hardcoded literals in {', '.join(p.name for p in SCANNED)}: {len(literals)}")
     for line in literals:
         print(f"  FAIL  {line}")
     print(f"colour tokens valid for Tk + matplotlib: {token_count} checked, {len(tokens)} bad")

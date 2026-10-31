@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import theme as T          # noqa: E402
 import anim as A           # noqa: E402
+import dashboard as D      # noqa: E402
 
 MAX_ANIMATED_WIDGETS = 12
 
@@ -54,8 +55,12 @@ def build(root, widgets: int, motion):
                            text_color=T.c("accent"))
     counter.pack(pady=(10, 4))
 
-    # A pure-tk Canvas sparkline: M3 replaces matplotlib with something like this.
-    spark = _make_sparkline(holder)
+    # The real M3 dashboard: KPI cards, Canvas sparkline, component bars and a
+    # resource strip.  In perf mode every update snaps -- that static cost is
+    # exactly what perf_budget gates.
+    dash = _build_dashboard(holder, motion)
+    spark = dash["spark"]
+    history: list[float] = []
 
     toasts = A.Toasts(root, motion=motion)
     number = A.TweenNumber(counter, duration=300, motion=motion)
@@ -85,20 +90,29 @@ def build(root, widgets: int, motion):
         root.after(max(1, motion.frame_ms() - int(work_ms)), tick)
 
     def spark_loop():
-        """Sparkline at the spec'd ~120 ms cadence, not per frame."""
+        """Sparkline at the spec'd ~120 ms cadence, not per frame (animated only)."""
         if state["stop"]:
             return
-        spark.append(state["frames"] % 40 / 40.0)
+        spark.push(state["frames"] % 40 / 40.0)
         root.after(120, spark_loop)
 
     def poll():
         if state["stop"]:
             return
-        # Emulates the launcher's 2 s status read (a small JSON file).
-        try:
-            json.loads('{"steps": 1, "mean_reward": 0.0, "components": {"explore": 0.1}}')
-        except Exception:
-            pass
+        # Emulates the launcher's 2 s status read (a small JSON file) plus the
+        # dashboard push that replaced the old matplotlib redraw.  Values move
+        # every sample, like a real run, so the tween/redraw cost is real.
+        n = int(time.perf_counter() - state["t0"])
+        history.append(0.5 + (n % 7) * 0.1)
+        dash["update"]({
+            "steps": n * 500, "steps_s": 250.0,
+            "mean_reward": history[-1], "best_reward": max(history),
+            "elapsed": n, "tiles": 4, "expected": 4,
+            "history": list(history),
+            "components": {"explore": 0.4 + (n % 3) * 0.01,
+                           "heal": -0.1 - (n % 2) * 0.01,
+                           "caught": 1.2 - (n % 4) * 0.01},
+        })
         root.after(2000, poll)
 
     def timer_loop():
@@ -130,35 +144,45 @@ def build(root, widgets: int, motion):
     return state, animate_cards, tick, spark_loop, poll, timer_loop
 
 
-def _make_sparkline(parent, width: int = 420, height: int = 90):
-    import tkinter as tk
+def _build_dashboard(parent, motion):
+    """Build the same widget group the launcher's compact dashboard uses."""
+    import customtkinter as ctk
 
-    canvas = tk.Canvas(parent, width=width, height=height, highlightthickness=0,
-                       bd=0, bg=T.col("chart_bg"))
-    canvas.pack(fill="x", pady=(10, 0))
-    values: list[float] = []
-    line = {"id": None}
+    cards = ctk.CTkFrame(parent, fg_color="transparent")
+    cards.pack(fill="x")
+    spec = [("STEPS", 0), ("STEPS/S", 1), ("MEAN REWARD", 2),
+            ("BEST REWARD", 2), ("ELAPSED", 0), ("TILES", 0)]
+    kpi = []
+    for i, (caption, decimals) in enumerate(spec):
+        cards.grid_columnconfigure(i, weight=1)
+        card = D.KpiCard(cards, caption, width=96, height=54, decimals=decimals,
+                         motion=motion)
+        card.frame.grid(row=0, column=i, sticky="nsew",
+                        padx=(0 if i == 0 else T.SPACE["sm"], 0))
+        kpi.append(card)
 
-    def redraw():
-        canvas.delete("all")
-        if len(values) < 2:
-            return
-        n = len(values)
-        pts = []
-        for i, v in enumerate(values):
-            x = 4 + (width - 8) * i / (n - 1)
-            y = height - 6 - (height - 12) * max(0.0, min(1.0, v))
-            pts.extend((x, y))
-        canvas.create_line(*pts, fill=T.col("chart_line"), width=2, smooth=True)
+    mid = ctk.CTkFrame(parent, fg_color="transparent")
+    mid.pack(fill="x", pady=(T.SPACE["xs"], 0))
+    spark = D.Sparkline(mid, width=420, height=70, motion=motion)
+    spark.pack(side="left", fill="both", expand=True)
+    bars = D.ComponentBars(mid, motion=motion, bar_width=110)
+    bars.pack(side="left", fill="x", padx=(T.SPACE["md"], 0))
+    resource = D.ResourceStrip(parent)
+    resource.pack(anchor="w", pady=(T.SPACE["xs"], 0))
 
-    def append(v: float):
-        values.append(v)
-        if len(values) > 120:
-            del values[0]
-        redraw()
+    def update(data):
+        kpi[0].set_number(data["steps"])
+        kpi[1].set_number(data.get("steps_s", 0.0))
+        kpi[2].set_number(data["mean_reward"])
+        kpi[3].set_number(data.get("best_reward", data["mean_reward"]))
+        kpi[4].set_text(f"{data.get('elapsed', 0)}s")
+        kpi[5].set_text(f"{data.get('tiles', 0)}/{data.get('expected', 0)}")
+        spark.set_data(data.get("history", []))
+        bars.update(data.get("components", {}) or {})
+        resource.refresh()
 
-    canvas.append = append  # type: ignore[attr-defined]
-    return canvas
+    return {"kpi": kpi, "spark": spark, "bars": bars,
+            "resource": resource, "update": update}
 
 
 def main() -> int:

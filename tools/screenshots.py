@@ -237,14 +237,50 @@ def run_one(args) -> dict:
         shots.append({"surface": "install", "ok": False, "note": f"{type(e).__name__}: {e}"})
 
     # --- the two training screens (they replace the select screen) ---
+    def seed_dashboard():
+        """Populate the M3 dashboard so the shots show a live-looking sample.
+
+        Seeded in performance mode so every count/bar snaps to its final value
+        immediately (no tween to wait out), then handed back to the normal mode.
+        """
+        gui.A.set_performance(True)
+        app.start_time = time.time() - 754
+        app.expected_windows = 4
+        app.embedded_hwnds = {1, 2, 3}
+        comps = {"explore": 0.42, "heal": -0.13, "caught": 1.18}
+        hist = [0.2, 0.45, 0.4, 0.7, 0.65, 0.9, 0.85, 1.1, 1.05, 1.3]
+        for i, r in enumerate(hist[:-1]):
+            app._update_dashboard({"steps": (i + 1) * 4096, "mean_reward": r,
+                                   "components": {k: v + (i % 3) * 0.03
+                                                  for k, v in comps.items()}})
+        # Final sample after a real 2 s gap so STEPS/S is a non-zero number.
+        app._prev_steps = (len(hist) - 1) * 4096
+        app._prev_steps_t = time.time() - 2.0
+        app._update_dashboard({"steps": len(hist) * 4096, "mean_reward": hist[-1],
+                               "components": comps})
+        gui.A.set_performance(False)
+        _pump(app, 0.4)
+        # The header clock is only ticked by the 1 Hz loop; set it to match the
+        # ELAPSED card so the shot reads as one running session.
+        try:
+            app.timer_label.configure(text="00:12:34")
+        except Exception:
+            pass
+        # The GPU probe runs on a background thread; by now its first result is
+        # in, so refresh once more to show it instead of "GPU n/a".
+        if app.resource is not None:
+            app.resource.refresh()
+
     try:
         app.build_headless_status_frame()
+        seed_dashboard()
         record("headless", app)
     except Exception as e:
         shots.append({"surface": "headless", "ok": False, "note": f"{type(e).__name__}: {e}"})
 
     try:
         app.build_grid_frame(4, 2)
+        seed_dashboard()
         record("grid", app)
     except Exception as e:
         shots.append({"surface": "grid", "ok": False, "note": f"{type(e).__name__}: {e}"})

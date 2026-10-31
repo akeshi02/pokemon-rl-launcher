@@ -41,6 +41,7 @@ import customtkinter as ctk
 
 import theme as T
 import anim as A
+import dashboard as D
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -333,8 +334,6 @@ class LauncherApp(ctk.CTk):
         self.status_label_live = None
         self.components_label = None
         self.reward_history = deque(maxlen=120)
-        self.graph_canvas = None
-        self.graph_ax = None
         self._train_log = None
         self.train_log_path = None
 
@@ -344,6 +343,14 @@ class LauncherApp(ctk.CTk):
         self._stats_disp = {"steps": 0.0, "reward": 0.0}
         self._running_dot_stop = None
         self._env_progress = None
+
+        # M3 dashboard state: the built dashboard widget group, the derived
+        # metrics (steps/s, best reward) and the resource strip.
+        self.dash = None
+        self._best_reward = None
+        self._prev_steps = None
+        self._prev_steps_t = None
+        self.resource = None
 
         self.cfg = load_launcher_config()
 
@@ -436,6 +443,23 @@ class LauncherApp(ctk.CTk):
             except Exception:
                 pass
             self._env_progress = None
+        # The dashboard belongs to the screen we just tore down: stop its bar
+        # tweens and the GPU probe thread, then drop the references.
+        if self.dash is not None:
+            for key in ("spark", "bars"):
+                widget = self.dash.get(key)
+                if widget is not None:
+                    try:
+                        widget.destroy()
+                    except Exception:
+                        pass
+            self.dash = None
+        if self.resource is not None:
+            try:
+                self.resource.stop()
+            except Exception:
+                pass
+            self.resource = None
 
     # ------------------------------------------------------------------
     # Themed chrome helpers (M1: one place defines what a card/header/dialog
@@ -1441,20 +1465,11 @@ class LauncherApp(ctk.CTk):
         ctk.CTkLabel(head_row, text="Training running headless (no windows to display).",
                      font=T.f("h4")).pack(side="left")
 
-        self.status_label_live = ctk.CTkLabel(f, text="steps: -- | mean reward: --",
-                                               font=T.f("body"))
-        self.status_label_live.pack(pady=(0, T.SPACE["xs"]))
-
-        self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
-                                              font=T.f("small"), justify="left")
-        self.components_label.pack(pady=(0, T.SPACE["sm"]))
-
-        graph_holder = ctk.CTkFrame(f, fg_color="transparent")
-        graph_holder.pack(fill="x", padx=40)
-        self._build_mini_graph(graph_holder)
+        self._build_dashboard(f, compact=False)
 
         btn_row = ctk.CTkFrame(f, fg_color="transparent")
         btn_row.pack(pady=T.SPACE["lg"])
+        ctk.CTkButton(btn_row, text="Expanded chart", width=130, command=self.open_chart).pack(side="left", padx=T.SPACE["xs"])
         ctk.CTkButton(btn_row, text="Open TensorBoard", width=140, command=self.launch_tensorboard).pack(side="left", padx=T.SPACE["xs"])
         ctk.CTkButton(btn_row, text="Open Runs Folder", width=140, command=self.open_runs_folder).pack(side="left", padx=T.SPACE["xs"])
         ctk.CTkButton(btn_row, text="Open Log", width=110, command=self.open_train_log).pack(side="left", padx=T.SPACE["xs"])
@@ -1479,27 +1494,23 @@ class LauncherApp(ctk.CTk):
         self.timer_label = ctk.CTkLabel(toolbar, text="00:00:00", font=T.f("timer_grid", "bold"))
         self.timer_label.pack(side="left", padx=(0, T.SPACE["lg"]))
 
-        self.grid_status_label = ctk.CTkLabel(toolbar, text="Waiting for game windows to appear...")
-        self.grid_status_label.pack(side="left")
+        # Pack the buttons first so they always keep their width; the status
+        # label is packed last and absorbs whatever space is left (it is the one
+        # that may be squeezed, not the controls).
         ctk.CTkButton(toolbar, text="Stop Training & Close", command=self.on_close).pack(side="right")
         ctk.CTkButton(toolbar, text="Open TensorBoard", width=130, command=self.launch_tensorboard).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Runs Folder", width=100, command=self.open_runs_folder).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Log", width=80, command=self.open_train_log).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Re-tile now", width=100,
                       command=lambda: self.retile_now(notify=True)).pack(side="right", padx=T.SPACE["sm"])
+        ctk.CTkButton(toolbar, text="Chart", width=70,
+                      command=self.open_chart).pack(side="right", padx=T.SPACE["sm"])
+        self.grid_status_label = ctk.CTkLabel(toolbar, text="Waiting for tiles...",
+                                              anchor="w")
+        self.grid_status_label.pack(side="left", fill="x", expand=True)
         self.update_timer()
 
-        stats_row = ctk.CTkFrame(f, fg_color="transparent")
-        stats_row.pack(fill="x", padx=T.SPACE["md"], pady=(0, T.SPACE["xs"]))
-        self.status_label_live = ctk.CTkLabel(stats_row, text="steps: -- | mean reward: --",
-                                               font=T.f("body"))
-        self.status_label_live.pack(side="left")
-
-        self._build_mini_graph(stats_row)
-
-        self.components_label = ctk.CTkLabel(f, text="", text_color=T.c("text_faint"),
-                                              font=T.f("small"), justify="left")
-        self.components_label.pack(anchor="w", padx=T.SPACE["md"], pady=(0, T.SPACE["sm"]))
+        self._build_dashboard(f, compact=True)
 
         self.poll_training_status()
 
@@ -1524,20 +1535,132 @@ class LauncherApp(ctk.CTk):
             return  # widget may have been destroyed
         self.after(1000, self.update_timer)
 
-    def _build_mini_graph(self, parent):
-        fig = Figure(figsize=(4.2, 1.1), dpi=100)
+    # ------------------------------------------------------------------
+    # M3 live dashboard (pure tk/Canvas; matplotlib only in open_chart)
+    # ------------------------------------------------------------------
+    def _build_dashboard(self, parent, compact=False):
+        """KPI cards + Canvas sparkline + component bars + resource strip.
+
+        Reduced-motion users get the compact one-line fallback instead of the
+        animated cards (ROADMAP §2C).  Nothing here imports matplotlib, so the
+        2 s status tick can never redraw a figure.
+        """
+        # The one-line fallback is always kept and updated by _render_stats; it
+        # is only *shown* for reduced-motion users (or before a status arrives).
+        self.status_label_live = ctk.CTkLabel(parent, text="steps: -- | mean reward: --",
+                                              font=T.f("body"))
+        self.components_label = ctk.CTkLabel(parent, text="", text_color=T.c("text_faint"),
+                                             font=T.f("small"), justify="left")
+
+        if A.MOTION.reduce_motion:
+            self.status_label_live.pack(anchor="w", padx=T.SPACE["md"], pady=(0, T.SPACE["xs"]))
+            self.components_label.pack(anchor="w", padx=T.SPACE["md"], pady=(0, T.SPACE["sm"]))
+            self.resource = D.ResourceStrip(parent)
+            self.resource.pack(anchor="w", padx=T.SPACE["md"], pady=(0, T.SPACE["sm"]))
+            self.resource.refresh()
+            self.dash = None
+            return
+
+        cards = ctk.CTkFrame(parent, fg_color="transparent")
+        cards.pack(fill="x", padx=T.SPACE["md"], pady=(0, T.SPACE["sm"]))
+        kpi_spec = [
+            ("steps", "STEPS", 0),
+            ("steps_s", "STEPS/S", 1),
+            ("mean_reward", "MEAN REWARD", 2),
+            ("best_reward", "BEST REWARD", 2),
+            ("elapsed", "ELAPSED", 0),
+            ("tiles", "TILES", 0),
+        ]
+        kpi = {}
+        for i, (key, caption, decimals) in enumerate(kpi_spec):
+            cards.grid_columnconfigure(i, weight=1)
+            card = D.KpiCard(cards, caption, width=96, height=54, decimals=decimals)
+            card.frame.grid(row=0, column=i, sticky="nsew",
+                            padx=(0 if i == 0 else T.SPACE["sm"], 0))
+            kpi[key] = card
+
+        mid = ctk.CTkFrame(parent, fg_color="transparent")
+        mid.pack(fill="x", padx=T.SPACE["md"])
+        spark = D.Sparkline(mid, width=420, height=(60 if compact else 88))
+        spark.pack(side="left", fill="both", expand=True)
+        bars = D.ComponentBars(mid, bar_width=(110 if compact else 150))
+        bars.pack(side="left", fill="x", padx=(T.SPACE["md"], 0))
+
+        self.resource = D.ResourceStrip(parent)
+        self.resource.pack(anchor="w", padx=T.SPACE["md"], pady=(T.SPACE["xs"], T.SPACE["sm"]))
+        self.resource.refresh()
+
+        self.dash = {"kpi": kpi, "spark": spark, "bars": bars}
+
+    def _clock(self, seconds: int) -> str:
+        hrs, rem = divmod(max(0, int(seconds)), 3600)
+        mins, secs = divmod(rem, 60)
+        return f"{hrs:d}:{mins:02d}:{secs:02d}" if hrs else f"{mins:d}m {secs:02d}s"
+
+    def _update_dashboard(self, data: dict) -> None:
+        """Push one status sample to the dashboard (cheap; no matplotlib)."""
+        now = time.time()
+        steps = int(data.get("steps", 0) or 0)
+        mean_reward = float(data.get("mean_reward", 0.0) or 0.0)
+
+        # steps/s over the wall-clock gap between samples.
+        sps = 0.0
+        if self._prev_steps is not None and self._prev_steps_t is not None:
+            dt = now - self._prev_steps_t
+            if dt > 1e-6:
+                sps = max(0.0, (steps - self._prev_steps) / dt)
+        self._prev_steps, self._prev_steps_t = steps, now
+
+        self._best_reward = mean_reward if self._best_reward is None \
+            else max(self._best_reward, mean_reward)
+        self.reward_history.append(mean_reward)
+        elapsed = int(now - self.start_time) if self.start_time else 0
+
+        if self.dash:
+            kpi = self.dash["kpi"]
+            kpi["steps"].set_number(steps)
+            kpi["steps_s"].set_number(sps)
+            kpi["mean_reward"].set_number(mean_reward)
+            kpi["best_reward"].set_number(self._best_reward)
+            kpi["elapsed"].set_text(self._clock(elapsed))
+            kpi["tiles"].set_text(f"{len(self.embedded_hwnds)}/{getattr(self, 'expected_windows', 0)}")
+            self.dash["spark"].set_data(list(self.reward_history))
+            self.dash["bars"].update(data.get("components", {}) or {})
+        elif self.components_label is not None:
+            components = data.get("components", {}) or {}
+            if components:
+                parts = [f"{k}: {v:.2f}" for k, v in components.items()]
+                try:
+                    self.components_label.configure(text="  ·  ".join(parts))
+                except Exception:
+                    pass
+        if self.resource is not None:
+            self.resource.refresh()
+
+    def open_chart(self):
+        """The explicit expanded matplotlib view -- deliberately off the hot path."""
+        win = self._dialog("Mean reward", 720, 460)
+        fig = Figure(figsize=(6.6, 3.5), dpi=100)
         fig.patch.set_facecolor(T.col("chart_bg"))
         ax = fig.add_subplot(111)
         ax.set_facecolor(T.col("chart_bg"))
         ax.tick_params(colors=T.col("chart_axis"), labelsize=T.SIZES["chart_tick"])
         for spine in ax.spines.values():
             spine.set_color(T.col("chart_grid"))
-        fig.subplots_adjust(left=0.08, right=0.98, top=0.92, bottom=0.2)
-
-        canvas = FigureCanvasTkAgg(fig, master=parent)
-        canvas.get_tk_widget().pack(side="right", fill="x", expand=True, padx=(20, 0))
-        self.graph_canvas = canvas
-        self.graph_ax = ax
+        ys = list(self.reward_history)
+        if len(ys) >= 2:
+            ax.plot(ys, color=T.col("chart_line"), linewidth=1.5)
+        ax.set_title("mean reward", color=T.col("chart_axis"),
+                     fontsize=T.SIZES["chart_title"], loc="left")
+        fig.subplots_adjust(left=0.08, right=0.98, top=0.9, bottom=0.14)
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.get_tk_widget().pack(fill="both", expand=True,
+                                    padx=T.SPACE["md"], pady=T.SPACE["md"])
+        try:
+            canvas.draw()
+        except Exception:
+            pass
+        return win
 
     def poll_training_status(self):
         if self.proc is None:
@@ -1565,14 +1688,10 @@ class LauncherApp(ctk.CTk):
                     data = json.load(fjson)
                 steps = data.get("steps", 0)
                 mean_reward = data.get("mean_reward", 0.0)
+                # The one-line label stays current as the reduced-motion fallback;
+                # the dashboard gets the full sample.  Neither touches matplotlib.
                 self._set_stats(steps, mean_reward)
-                self.reward_history.append(mean_reward)
-                self._redraw_graph()
-
-                components = data.get("components", {})
-                if components and self.components_label is not None:
-                    parts = [f"{k}: {v:.2f}" for k, v in components.items()]
-                    self.components_label.configure(text="  ·  ".join(parts))
+                self._update_dashboard(data)
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -1622,23 +1741,6 @@ class LauncherApp(ctk.CTk):
             self.status_label_live.configure(
                 text=f"steps: {int(round(self._stats_disp['steps'])):,} "
                      f"| mean reward: {self._stats_disp['reward']:.2f}")
-        except Exception:
-            pass
-
-    def _redraw_graph(self):
-        if self.graph_ax is None or len(self.reward_history) < 2:
-            return
-        self.graph_ax.clear()
-        self.graph_ax.set_facecolor(T.col("chart_bg"))
-        self.graph_ax.tick_params(colors=T.col("chart_axis"), labelsize=T.SIZES["chart_tick"])
-        for spine in self.graph_ax.spines.values():
-            spine.set_color(T.col("chart_grid"))
-        ys = list(self.reward_history)
-        self.graph_ax.plot(ys, color=T.col("chart_line"), linewidth=1.5)
-        self.graph_ax.set_title("mean reward", color=T.col("chart_axis"),
-                                fontsize=T.SIZES["chart_title"], loc="left")
-        try:
-            self.graph_canvas.draw_idle()
         except Exception:
             pass
 

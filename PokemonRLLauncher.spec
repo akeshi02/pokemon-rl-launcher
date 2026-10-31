@@ -15,7 +15,7 @@ from PyInstaller.utils.hooks import collect_all
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 
-hiddenimports = ctk_hidden + ["win32timezone", "theme", "anim"]
+hiddenimports = ctk_hidden + ["win32timezone", "theme", "anim", "dashboard", "psutil"]
 
 # Bundle design assets (fonts/icons) next to the app as "assets/".  theme.py
 # looks them up via sys._MEIPASS when frozen; missing files fall back cleanly.

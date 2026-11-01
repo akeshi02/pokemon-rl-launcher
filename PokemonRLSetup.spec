@@ -9,8 +9,15 @@ the project so end users only ever double-click an EXE.
 """
 
 import os
+import sys
 
 datas = [("overlay", "overlay"), ("logo.png", ".")]
+
+# Same conda note as PokemonRLLauncher.spec: DLLs live in <env>\Library\bin,
+# which is only on PATH while the env is activated.
+_conda_bin = os.path.join(sys.prefix, "Library", "bin")
+if os.path.isdir(_conda_bin) and _conda_bin.lower() not in os.environ["PATH"].lower().split(os.pathsep):
+    os.environ["PATH"] = _conda_bin + os.pathsep + os.environ["PATH"]
 
 _launcher = os.path.join("dist", "PokemonRLLauncher.exe")
 if os.path.isfile(_launcher):

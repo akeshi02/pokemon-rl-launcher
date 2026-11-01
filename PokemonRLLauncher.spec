@@ -10,12 +10,23 @@ stable-baselines3 are deliberately excluded (they live in the user's env).
 """
 
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all
 
 ctk_datas, ctk_binaries, ctk_hidden = collect_all("customtkinter")
 
-hiddenimports = ctk_hidden + ["win32timezone", "theme", "anim", "dashboard", "psutil"]
+# Conda environments keep runtime DLLs (libexpat.dll, zlib1.dll, ...) in
+# <env>\Library\bin, which is only on PATH while the env is activated.  If the
+# build is run through python.exe directly the dependency scan misses them and
+# the frozen EXE fails to start ("DLL load failed while importing pyexpat").
+# Put the directory on PATH before Analysis so extensions pick up their real
+# dependencies wherever this spec is driven from.
+_conda_bin = os.path.join(sys.prefix, "Library", "bin")
+if os.path.isdir(_conda_bin) and _conda_bin.lower() not in os.environ["PATH"].lower().split(os.pathsep):
+    os.environ["PATH"] = _conda_bin + os.pathsep + os.environ["PATH"]
+
+hiddenimports = ctk_hidden + ["win32timezone", "theme", "anim", "dashboard", "tiles", "psutil"]
 
 # Bundle design assets (fonts/icons) next to the app as "assets/".  theme.py
 # looks them up via sys._MEIPASS when frozen; missing files fall back cleanly.

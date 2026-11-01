@@ -30,9 +30,10 @@ ROOT = Path(__file__).resolve().parent.parent
 V2 = ROOT / "overlay" / "v2"
 GUI = V2 / "pokemon_launcher_gui.py"
 DASHBOARD = V2 / "dashboard.py"
+TILES = V2 / "tiles.py"
 
 # Every UI module whose literals must go through theme.py.
-SCANNED = (GUI, DASHBOARD)
+SCANNED = (GUI, DASHBOARD, TILES)
 
 # (regex, why it is allowed) -- layout numbers that are not on a shared scale.
 ALLOWED_LITERALS = [

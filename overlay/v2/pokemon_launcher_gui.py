@@ -42,6 +42,7 @@ import customtkinter as ctk
 import theme as T
 import anim as A
 import dashboard as D
+import tiles as Tiles
 
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -328,6 +329,10 @@ class LauncherApp(ctk.CTk):
         self.proc = None
         self.root_pid = None
         self.embedded_hwnds = set()
+        # M4 grid chrome: the tile grid (None until the grid screen is built)
+        # and the toolbar's layout-preset variable.
+        self.tile_grid = None
+        self.preset_var = None
         self.resolved_sess_path = None
         self.start_time = None
         self.timer_label = None
@@ -460,6 +465,15 @@ class LauncherApp(ctk.CTk):
             except Exception:
                 pass
             self.resource = None
+        # The tile grid belongs to the grid screen we just tore down.  Its tile
+        # frames are already gone with the screen; releasing the animators drops
+        # any outstanding timer-resolution lease.
+        if self.tile_grid is not None:
+            try:
+                self.tile_grid.destroy()
+            except Exception:
+                pass
+            self.tile_grid = None
 
     # ------------------------------------------------------------------
     # Themed chrome helpers (M1: one place defines what a card/header/dialog
@@ -1505,6 +1519,12 @@ class LauncherApp(ctk.CTk):
                       command=lambda: self.retile_now(notify=True)).pack(side="right", padx=T.SPACE["sm"])
         ctk.CTkButton(toolbar, text="Chart", width=70,
                       command=self.open_chart).pack(side="right", padx=T.SPACE["sm"])
+        # Layout presets (M4 §2D): how many tiles share the grid at once.  "All"
+        # keeps every env visible; a number pages them.
+        self.preset_var = tk.StringVar(value=Tiles.PRESETS[0][0])
+        ctk.CTkOptionMenu(toolbar, values=[label for label, _ in Tiles.PRESETS],
+                          variable=self.preset_var, width=76,
+                          command=self._on_preset).pack(side="right", padx=T.SPACE["sm"])
         self.grid_status_label = ctk.CTkLabel(toolbar, text="Waiting for tiles...",
                                               anchor="w")
         self.grid_status_label.pack(side="left", fill="x", expand=True)
@@ -1514,13 +1534,23 @@ class LauncherApp(ctk.CTk):
 
         self.poll_training_status()
 
-        # Plain tk.Frame (not CTkFrame) for the embed target -- keeps a real, simple HWND to reparent into.
+        # Plain tk.Frame (not CTkFrame) for the embed target -- it gives each
+        # tile body a real, simple HWND to reparent into, and lets Tk own the
+        # grid layout (see tiles.py).
         self.game_area = tk.Frame(f, bg=T.col("grid_bg"), highlightthickness=0, bd=0)
         self.game_area.pack(fill="both", expand=True, padx=T.SPACE["md"], pady=(0, T.SPACE["md"]))
-        self.game_area.bind("<Configure>", lambda e: self.retile_now())
 
         self.grid_cols = cols
         self.expected_windows = num_cpu
+        # Build the placeholders up front so the grid shows the expected tile
+        # count before any emulator window has appeared; unfilled ones stay
+        # stale with a Retry (M4 dead-tile watchdog).
+        self.tile_grid = Tiles.TileGrid(self.game_area, num_cpu,
+                                        embed_fn=embed_window,
+                                        on_copy=self._copy_tile,
+                                        on_retry=self._retry_tile)
+        self.tile_grid.set_preset(self._preset_per_page())
+        self.grid_status_label.configure(text=self._tiles_status_text())
 
     def update_timer(self):
         if self.start_time is None or self.timer_label is None:
@@ -1744,21 +1774,45 @@ class LauncherApp(ctk.CTk):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # M4 grid chrome (tiles.py owns the layout; these wrappers talk to win32
+    # and the toolbar/status line)
+    # ------------------------------------------------------------------
+    def _preset_per_page(self):
+        try:
+            label = self.preset_var.get() if self.preset_var is not None else "All"
+        except Exception:
+            label = "All"
+        return dict(Tiles.PRESETS).get(label, 0)
+
+    def _on_preset(self, label):
+        if self.tile_grid is None:
+            return
+        self.tile_grid.set_preset(dict(Tiles.PRESETS).get(label, 0))
+        self.grid_status_label.configure(text=self._tiles_status_text())
+
+    def _tiles_status_text(self):
+        if self.tile_grid is None:
+            return "Waiting for tiles..."
+        live = self.tile_grid.live_count()
+        total = len(self.tile_grid.tiles)
+        stale = self.tile_grid.stale_count()
+        text = f"{live}/{total} tile(s) live"
+        if stale:
+            text += f"  ·  {stale} need retry"
+        if self.tile_grid.pages() > 1:
+            text += f"  ·  page {self.tile_grid.page + 1}/{self.tile_grid.pages()}"
+        return text
+
     def retile_now(self, notify=False):
-        if not self.embedded_hwnds:
-            return
-        self.game_area.update_idletasks()
-        area_w = self.game_area.winfo_width()
-        area_h = self.game_area.winfo_height()
-        if area_w < 10 or area_h < 10:
-            return
-        positions = compute_grid(len(self.embedded_hwnds), self.grid_cols, area_w, area_h, margin=4)
-        for hwnd, (x, y, w, h) in zip(sorted(self.embedded_hwnds), positions):
+        """Re-snap every embedded tile to its 10:9 body (the manual Re-tile)."""
+        if self.tile_grid is not None:
             try:
-                win32gui.SetWindowPos(hwnd, 0, x, y, w, h,
-                                       win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-            except Exception as e:
-                print(f"Warning: couldn't reposition window {hwnd}: {e}")
+                self.game_area.update_idletasks()
+                self.tile_grid.refit_all()
+            except Exception:
+                pass
+            self.grid_status_label.configure(text=self._tiles_status_text())
         if notify:
             self.toasts.show(f"Re-tiled {len(self.embedded_hwnds)} tile(s).",
                              kind="info", timeout=2500)
@@ -1768,8 +1822,7 @@ class LauncherApp(ctk.CTk):
         found = []
         while time.time() - start < timeout:
             if self.proc.poll() is not None:
-                self.after(0, lambda: self.grid_status_label.configure(
-                    text="Training process exited before windows were detected."))
+                self.after(0, self._on_watch_gone)
                 return
             pids = get_descendant_pids(self.root_pid)
             found = enum_visible_windows_for_pids(pids)
@@ -1777,12 +1830,10 @@ class LauncherApp(ctk.CTk):
                 break
             time.sleep(1.0)
 
-        if not found:
-            self.after(0, lambda: self.grid_status_label.configure(
-                text="No game windows detected."))
-            return
-
-        self.after(0, lambda: self.embed_found_windows(found))
+        if found:
+            self.after(0, lambda w=list(found): self.embed_found_windows(w))
+        else:
+            self.after(0, self._on_watch_timeout)
 
         while self.proc.poll() is None:
             time.sleep(3.0)
@@ -1791,21 +1842,133 @@ class LauncherApp(ctk.CTk):
             new_ones = current - self.embedded_hwnds
             if new_ones:
                 self.after(0, lambda w=list(new_ones): self.embed_found_windows(w))
+            missing = self.embedded_hwnds - current
+            if missing:
+                self.after(0, lambda w=list(missing): self.mark_tiles_dead(w))
+
+    def _on_watch_gone(self):
+        try:
+            self.grid_status_label.configure(
+                text="Training process exited before windows were detected.")
+        except Exception:
+            pass
+
+    def _on_watch_timeout(self):
+        # The placeholder tiles are already stale with a Retry, so the watchdog
+        # surfaces per tile -- this is just the global nudge.
+        try:
+            self.grid_status_label.configure(text=self._tiles_status_text())
+        except Exception:
+            pass
+        self.toasts.show("No game windows detected yet -- use Retry on a tile.",
+                         kind="warn", title="Grid", timeout=5000)
 
     def embed_found_windows(self, hwnds):
-        self.game_area.update_idletasks()
-        parent_hwnd = self.game_area.winfo_id()
-        for hwnd in hwnds:
-            try:
-                embed_window(hwnd, parent_hwnd, 0, 0, 100, 100)
-                self.embedded_hwnds.add(hwnd)
-            except Exception as e:
-                print(f"Warning: failed to embed window {hwnd}, leaving it floating. ({e})")
+        if self.tile_grid is None:
+            return
+        try:
+            self.game_area.update_idletasks()
+        except Exception:
+            pass
+        bound = self.tile_grid.assign_many(list(hwnds))
+        self.embedded_hwnds = self.tile_grid.hwnds()
+        try:
+            self.grid_status_label.configure(text=self._tiles_status_text())
+        except Exception:
+            pass
+        if bound:
+            self.toasts.show(f"{bound} game window(s) embedded.",
+                             kind="ok", timeout=3000)
 
-        self.grid_status_label.configure(text=f"{len(self.embedded_hwnds)} game window(s) embedded.")
-        self.retile_now()
-        self.toasts.show(f"{len(self.embedded_hwnds)} game window(s) embedded.",
-                         kind="ok", timeout=3000)
+    def mark_tiles_dead(self, hwnds):
+        """A window disappeared mid-run: grey its tile and offer a Retry."""
+        if self.tile_grid is None:
+            return
+        changed = self.tile_grid.mark_dead(hwnds)
+        self.embedded_hwnds = self.tile_grid.hwnds()
+        if changed:
+            try:
+                self.grid_status_label.configure(text=self._tiles_status_text())
+            except Exception:
+                pass
+            self.toasts.show(f"{changed} tile(s) lost their window -- Retry to recover.",
+                             kind="warn", timeout=4000)
+
+    def _retry_tile(self, tile):
+        """Recover a stale tile without restarting training (M4 acceptance).
+
+        Discovery runs off the main thread -- ``EnumWindows`` walks every
+        top-level window, which we must not do in the Tk callback.
+        """
+        if self.proc is None or self.proc.poll() is not None:
+            self.toasts.show("Training has stopped; nothing to retry.",
+                             kind="warn", timeout=2500)
+            return
+        threading.Thread(target=self._retry_tile_worker, args=(tile,),
+                         daemon=True).start()
+
+    def _retry_tile_worker(self, tile):
+        try:
+            pids = get_descendant_pids(self.root_pid)
+            current = set(enum_visible_windows_for_pids(pids))
+        except Exception:
+            current = set()
+        fresh = [h for h in current if h not in self.embedded_hwnds]
+        if fresh:
+            hwnd = fresh[0]
+        elif tile.hwnd and tile.hwnd in current:
+            hwnd = tile.hwnd
+        else:
+            self.after(0, lambda: self._retry_failed(tile))
+            return
+        self.after(0, lambda h=hwnd: self._retry_apply(tile, h))
+
+    def _retry_failed(self, tile):
+        tile.mark_stale("No window found")
+        self.toasts.show(f"CPU {tile.index + 1} still has no window.",
+                         kind="warn", timeout=3000)
+
+    def _retry_apply(self, tile, hwnd):
+        if self.tile_grid is None:
+            return
+        tile.hwnd = None  # let assign() re-embed from scratch
+        tile.assign(hwnd, Tiles.window_title(hwnd))
+        self.embedded_hwnds = self.tile_grid.hwnds()
+        try:
+            self.grid_status_label.configure(text=self._tiles_status_text())
+        except Exception:
+            pass
+        self.toasts.show(f"CPU {tile.index + 1} recovered.", kind="ok", timeout=2500)
+
+    def _copy_tile(self, tile):
+        """Copy one tile's emulator screenshot to the Windows clipboard."""
+        try:
+            from PIL import ImageGrab
+            self.game_area.update_idletasks()
+            x, y = tile.stage.winfo_rootx(), tile.stage.winfo_rooty()
+            w, h = tile.stage.winfo_width(), tile.stage.winfo_height()
+            if w < 2 or h < 2:
+                raise ValueError("tile is not visible")
+            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            self._clipboard_image(img)
+            self.toasts.show(f"CPU {tile.index + 1} copied to the clipboard.",
+                             kind="ok", timeout=2000)
+        except Exception as e:  # noqa: BLE001 - report, never crash the grid
+            self.toasts.show(f"Copy failed: {e}", kind="error", timeout=3000)
+
+    @staticmethod
+    def _clipboard_image(img):
+        import io
+        import win32clipboard
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "BMP")
+        data = buf.getvalue()[14:]  # drop the 14-byte BMP file header -> CF_DIB
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+        finally:
+            win32clipboard.CloseClipboard()
 
     # ------------------------------------------------------------------
     def save_settings(self):

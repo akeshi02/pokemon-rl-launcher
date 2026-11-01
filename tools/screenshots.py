@@ -281,6 +281,20 @@ def run_one(args) -> dict:
     try:
         app.build_grid_frame(4, 2)
         seed_dashboard()
+        # Give the M4 tile chrome something to show: mark a few placeholders
+        # live with a fake title (no real env windows exist off a training run).
+        if app.tile_grid is not None:
+            for i, title in enumerate(("PyBoy 0  ·  steps 40,960",
+                                       "PyBoy 1  ·  steps 40,960",
+                                       "PyBoy 2  ·  steps 40,960")):
+                if i >= len(app.tile_grid.tiles):
+                    break
+                tile = app.tile_grid.tiles[i]
+                tile.hwnd = -(i + 1)  # a stand-in id; fit() guards on IsWindow
+                tile.title = title
+                tile.mark_live()
+            app.embedded_hwnds = app.tile_grid.hwnds()
+            app.grid_status_label.configure(text=app._tiles_status_text())
         record("grid", app)
     except Exception as e:
         shots.append({"surface": "grid", "ok": False, "note": f"{type(e).__name__}: {e}"})
